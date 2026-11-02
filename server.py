@@ -718,15 +718,26 @@ def get_status():
     news = engine.news_watcher.get_latest(limit=10)
     live_status = engine.live_executor.get_status()
 
-    # 实盘模式与模拟盘数据彻底解耦
+    # 实盘模式与模拟盘数据彻底解耦 (实盘遵循单一真源，不掺杂任何模拟盘统计)
     if engine.execution_mode == "live":
-        real_balance = live_status.get("usdc_balance", 4.0)
+        real_balance = live_status.get("usdc_balance", 6.98)
         live_bags = list(engine.live_executor.live_orders.values())
-        summary["total_equity"] = real_balance
-        summary["cash"] = real_balance
-        summary["locked_in_bags"] = sum([b.get("invested_usd", 0) for b in live_bags])
-        summary["active_bags"] = live_bags
-        summary["total_pnl_usd"] = engine.live_executor.cumulative_pnl
+        invested = sum([b.get("invested_usd", 0) for b in live_bags])
+        summary = {
+            "initial_balance": 6.98,
+            "current_cash": real_balance,
+            "invested_in_bags": invested,
+            "total_equity": real_balance,
+            "total_pnl_usd": engine.live_executor.cumulative_pnl,
+            "total_profit": engine.live_executor.cumulative_pnl,
+            "profit_pct": round((engine.live_executor.cumulative_pnl / 6.98) * 100, 2),
+            "trades_count": len(engine.live_executor.live_orders),
+            "successful_trades": 0,
+            "failed_trades": 0,
+            "win_rate_pct": 0.0,
+            "active_positions_count": len(live_bags),
+            "active_bags": live_bags,
+        }
         trades = [t for t in trades if t.get("mode") == "live"]
 
     return {

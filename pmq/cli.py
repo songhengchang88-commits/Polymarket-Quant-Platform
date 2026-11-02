@@ -13,6 +13,10 @@ import time
 from collections import Counter
 from typing import Any, Dict, List
 
+from dotenv import load_dotenv
+
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
+
 from pmq import marketdata, metrics, risk
 
 DEFAULT_JOURNAL = os.path.join("data", "pmq_journal.jsonl")
@@ -29,8 +33,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print("=== PMQ doctor ===")
     ok = True
 
-    has_key = bool(os.getenv("PK") or os.getenv("PRIVATE_KEY"))
-    print(f"[{'PASS' if has_key else 'WARN'}] 私钥环境变量 (PK / PRIVATE_KEY): {has_key}")
+    has_key = bool(os.getenv("POLY_PRIVATE_KEY") or os.getenv("PK") or os.getenv("PRIVATE_KEY"))
+    print(f"[{'PASS' if has_key else 'WARN'}] 私钥环境变量 (POLY_PRIVATE_KEY / PK / PRIVATE_KEY): {has_key}")
     ok = ok and has_key
 
     try:

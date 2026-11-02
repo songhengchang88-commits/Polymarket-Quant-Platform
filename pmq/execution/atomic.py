@@ -17,15 +17,32 @@ from typing import Any, Dict, List, Optional
 from pmq import risk
 from pmq.fees import CostModel
 
-try:  # 官方 SDK 未安装时仍可跑离线单测
-    from py_clob_client.clob_types import OrderArgs, OrderType
-except Exception:  # pragma: no cover
-    OrderArgs = None
+try:
+    from py_clob_client_v2.clob_types import OrderArgs as OrderArgsV2, OrderType as OrderTypeV2
+    OrderArgs = OrderArgsV2
+    OrderType = OrderTypeV2
+except Exception:
+    try:
+        from py_clob_client.clob_types import OrderArgs, OrderType
+    except Exception:  # pragma: no cover
+        OrderArgs = None
 
-    class OrderType:  # type: ignore[no-redef]
-        FOK = "FOK"
-        FAK = "FAK"
-        GTC = "GTC"
+        class OrderType:  # type: ignore[no-redef]
+            FOK = "FOK"
+            FAK = "FAK"
+            GTC = "GTC"
+
+
+def make_order_args(token_id: str, price: float, size: float, side: str, fee_rate_bps: int = 0) -> Any:
+    """根据实际安装的 SDK 动态生成兼容的 OrderArgs 对象"""
+    if OrderArgs is None:
+        raise RuntimeError("py_clob_client 未安装")
+    try:
+        # V2: OrderArgsV2(token_id=..., price=..., size=..., side=...)
+        return OrderArgs(token_id=token_id, price=price, size=size, side=side)
+    except TypeError:
+        # V1: 包含 fee_rate_bps
+        return OrderArgs(token_id=token_id, price=price, size=size, side=side, fee_rate_bps=fee_rate_bps)
 
 
 EPS = 1e-9
@@ -77,21 +94,16 @@ class AtomicPairExecutor:
         return event
 
     def _buy_fok(self, token_id: str, price: float, size: float) -> Any:
-        if OrderArgs is None:  # pragma: no cover
-            raise RuntimeError("py_clob_client 未安装")
-        args = OrderArgs(token_id=token_id, price=price, size=size, side="BUY", fee_rate_bps=0)
+        args = make_order_args(token_id=token_id, price=price, size=size, side="BUY")
         signed = self.client.create_order(args)
         return self.client.post_order(signed, OrderType.FOK)
 
     def _sell_fak(self, token_id: str, price: float, size: float) -> Any:
-        if OrderArgs is None:  # pragma: no cover
-            raise RuntimeError("py_clob_client 未安装")
-        args = OrderArgs(token_id=token_id, price=price, size=size, side="SELL", fee_rate_bps=0)
+        args = make_order_args(token_id=token_id, price=price, size=size, side="SELL")
         signed = self.client.create_order(args)
         return self.client.post_order(signed, OrderType.FAK)
 
-    @staticmethod
-    def _parse_fill(resp: Any, requested: float) -> tuple:
+    def _parse_fill(self, resp: Any, requested: float) -> tuple:
         """从回执里解析真实成交量。返回 (filled, status, order_id)。"""
         if not isinstance(resp, dict):
             return 0.0, "unknown", None
@@ -107,6 +119,22 @@ class AtomicPairExecutor:
                 continue
         if status in ("matched", "filled"):
             return float(requested), status, order_id
+
+        # 终态主动查询对账兜底: 避免本地网络抖动丢失 size_matched
+        if order_id and hasattr(self, "client") and hasattr(self.client, "get_order"):
+            try:
+                od = self.client.get_order(order_id)
+                if isinstance(od, dict):
+                    od_status = str(od.get("status", "")).lower()
+                    for key in ("size_matched", "matched_amount", "filled_size"):
+                        v = od.get(key)
+                        if v not in (None, "", []):
+                            return float(v), od_status, order_id
+                    if od_status in ("matched", "filled"):
+                        return float(requested), od_status, order_id
+            except Exception:
+                pass
+
         return 0.0, status, order_id
 
     def _cancel_quiet(self, order_id: Optional[str]) -> None:

@@ -154,7 +154,9 @@ class QuantEngine:
                                 price_1=parity_opp["ask_1"],
                                 amount_usd=live_alloc,
                                 question=parity_opp.get("question", ""),
-                                market_id=str(m["id"])
+                                market_id=str(m["id"]),
+                                book_0=ob_0,
+                                book_1=ob_1,
                             )
                         else:
                             logger.info(f"⏳ [资金周转中] 当前可用 {cur_bal:.2f}U，等待微利平仓回收后立即出手下一次")

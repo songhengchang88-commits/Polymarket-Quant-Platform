@@ -222,10 +222,14 @@ class PaperTrader:
                         )
                         should_exit = True
                         exit_reason = f"双边反向溢价结利 (Bid和: {bid_sum:.3f})"
-                    elif m.get("is_today") and elapsed >= 3600:
-                        realized_profit = round(pos["expected_profit_usd"], 2)
+                    elif (m.get("closed") or m.get("resolved")) and m.get("is_today"):
+                        # 官方预言机/市场关闭承兑: 只有确定闭盘且成对持有时，按每对 1.000U 规则承兑
+                        payout = pos["shares"] * 1.0
+                        realized_profit = round(
+                            payout - pos["invested_usd"] - config.ESTIMATED_GAS_FEE_USD, 2
+                        )
                         should_exit = True
-                        exit_reason = "到期 1.000U 承兑结算"
+                        exit_reason = "官方市场到期结算 (每对承兑 $1.00)"
             elif pos["type"] == "MAKER_SPREAD":
                 # 旧逻辑: 只要过了 120 秒就当作"撮合成功", 把模型利润记为已实现。
                 # 新逻辑: 必须有真实的双边买盘回升、且平掉双边后现金流为正, 才允许退出。

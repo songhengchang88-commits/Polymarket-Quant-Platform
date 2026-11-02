@@ -22,6 +22,12 @@ load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 logger = logging.getLogger("live_executor")
 
+# 引入工业级原子执行与单一真源对账内核
+from pmq.execution.atomic import AtomicPairExecutor, ExecutionResult
+from pmq import risk
+from pmq.fees import CostModel
+from pmq.journal import Journal
+
 
 class LiveClobExecutor:
     def __init__(self):
@@ -31,12 +37,14 @@ class LiveClobExecutor:
         self.funder = os.getenv("FUNDER_ADDRESS", "0x735e49143B19989E8c2BE88EdE72e96c1d0500dc").strip()
         self.wallet_address = os.getenv("WALLET_ADDRESS", "0x514f13a326a93aeda4522b973707e8602c2bcefd").strip()
 
-        # 风控 (以当前 36.91U 资金量启动，支持自适应动态升级)
-        self.hard_stop_loss_usd = float(os.getenv("HARD_STOP_LOSS_USD", "8.0"))
-        self.max_order_usd = float(os.getenv("MAX_ORDER_USD", "20.0"))
-        self.initial_deposit_usd = float(os.getenv("INITIAL_BALANCE", "36.91"))
+        # 风控 (单一真源: 初始资金 6.98U 防御资金，坚守 45% 仓位硬锁与 $1.15 底线)
+        self.hard_stop_loss_usd = float(os.getenv("HARD_STOP_LOSS_USD", "1.0"))
+        self.max_order_usd = float(os.getenv("MAX_ORDER_USD", "3.14"))
+        self.initial_deposit_usd = float(os.getenv("INITIAL_BALANCE", "6.98"))
 
         self.client = None
+        self.atomic_executor: Optional[AtomicPairExecutor] = None
+        self.journal: Optional[Journal] = None
         self.is_ready = False
         self.cumulative_pnl = 0.0
         self.live_orders: Dict[str, Dict] = {}
@@ -88,7 +96,23 @@ class LiveClobExecutor:
             creds = self.client.create_or_derive_api_key()
             self.client.set_api_creds(creds)
             self.is_ready = True
-            logger.info(f"⚡ [CLOB V2 实盘就绪] 客户端初始化成功！模式: sig_type={sig_type}, funder={self.funder[:10]}...")
+
+            # 接入工业级原子执行器与单一真源事件账本
+            journal_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "execution_journal.jsonl")
+            self.journal = Journal(journal_path)
+            limits = risk.Limits(
+                min_leg_usd=config.MIN_ORDER_LEG_USD,
+                max_pair_cost=config.PARITY_ARBITRAGE_THRESHOLD,
+                max_trade_usd=self.max_order_usd,
+                max_daily_loss_usd=self.hard_stop_loss_usd,
+            )
+            self.atomic_executor = AtomicPairExecutor(
+                client=self.client,
+                journal=self.journal,
+                costs=CostModel(),
+                limits=limits,
+            )
+            logger.info(f"⚡ [CLOB V2 实盘就绪] 客户端初始化成功！原子执行网关已接通 (sig_type={sig_type}, funder={self.funder[:10]}...)")
         except Exception as e:
             logger.error(f"CLOB V2 客户端初始化异常: {e}")
             self.is_ready = False
@@ -230,66 +254,87 @@ class LiveClobExecutor:
             logger.warning(f"🛑 [Polymarket 底线防护] 单腿价值不足 (YES: ${cost_0}, NO: ${cost_1} < ${config.MIN_ORDER_LEG_USD})，物理拒绝下单！")
             return None
 
-        try:
-            from py_clob_client_v2.clob_types import OrderArgs, OrderType
+        # 构造盘口风控对象 (基于真实深度与动态 Tick)
+        ts = time.time()
+        tick = getattr(config, "PRICE_TICK_SIZE", 0.001)
 
-            # 1. 发送 YES 买单 (GTC 限价吃单)
-            order_0 = OrderArgs(token_id=token_id_0, price=safe_p0, size=req_shares, side="BUY")
-            signed_0 = self.client.create_order(order_0)
-            resp_0 = self.client.post_order(signed_0, OrderType.GTC)
-            id_0 = resp_0.get("orderID") if isinstance(resp_0, dict) else str(resp_0)
+        b0_bid = book_0.get("best_bid", 0.0) if book_0 else max(0.01, price_0 - 0.02)
+        b0_ask = book_0.get("best_ask", price_0) if book_0 else price_0
+        b0_ask_size = book_0.get("best_ask_size", 100.0) if book_0 else 100.0
+        b0_bid_size = book_0.get("best_bid_size", 100.0) if book_0 else 100.0
 
-            # 2. 发送 NO 买单 (GTC 限价吃单)
+        b1_bid = book_1.get("best_bid", 0.0) if book_1 else max(0.01, price_1 - 0.02)
+        b1_ask = book_1.get("best_ask", price_1) if book_1 else price_1
+        b1_ask_size = book_1.get("best_ask_size", 100.0) if book_1 else 100.0
+        b1_bid_size = book_1.get("best_bid_size", 100.0) if book_1 else 100.0
+
+        r_book_0 = risk.Book(bid=b0_bid, ask=b0_ask, ts=ts, tick=tick, bid_size=b0_bid_size, ask_size=b0_ask_size)
+        r_book_1 = risk.Book(bid=b1_bid, ask=b1_ask, ts=ts, tick=tick, bid_size=b1_bid_size, ask_size=b1_ask_size)
+
+        # ---------------------------------------------------------------------
+        # 工业级内核: 全面委托给 AtomicPairExecutor 进行 FOK 双腿原子对冲
+        # ---------------------------------------------------------------------
+        if self.atomic_executor is not None:
             try:
-                order_1 = OrderArgs(token_id=token_id_1, price=safe_p1, size=req_shares, side="BUY")
-                signed_1 = self.client.create_order(order_1)
-                resp_1 = self.client.post_order(signed_1, OrderType.GTC)
-                id_1 = resp_1.get("orderID") if isinstance(resp_1, dict) else str(resp_1)
-            except Exception as e_leg2:
-                logger.critical(f"🚨 [单腿熔断防护盾启动] NO 腿买单异常 ({e_leg2})，立即紧急撤销 YES 腿订单 {id_0}！")
-                try:
-                    self.client.cancel(id_0)
-                except Exception:
-                    pass
+                exec_res = self.atomic_executor.execute(
+                    market_id=market_id,
+                    token_0=token_id_0,
+                    token_1=token_id_1,
+                    book_0=r_book_0,
+                    book_1=r_book_1,
+                    budget_usd=max_budget,
+                )
+
+                if not exec_res.ok:
+                    logger.info(
+                        f"🛡️ [原子执行撤回/拦截] 状态: {exec_res.status} | 原因: {', '.join(exec_res.reasons)} | "
+                        f"未对冲敞口: {exec_res.unhedged_shares:.4f} (坚守零亏损)"
+                    )
+                    if exec_res.has_exposure:
+                        logger.critical(f"🚨 [单腿暴露紧急熔断] 存在单腿未平敞口 {exec_res.unhedged_shares}，立即启动全撤守卫！")
+                        self.cancel_all_orders()
+                    return None
+
+                # 双腿 100% 确认足额成交，生成实盘锁死持仓
+                bag_key = market_id or f"mkt-{exec_res.order_ids.get('leg0', '0')[:8]}"
+                record = {
+                    "id": f"live-bag-{int(time.time()*1000)}",
+                    "market_id": bag_key,
+                    "status": "HOLDING_LOCK",
+                    "mode": "live",
+                    "question": question,
+                    "pair_cost": round(exec_res.price_0 + exec_res.price_1, 4),
+                    "order_id_0": exec_res.order_ids.get("leg0"),
+                    "order_id_1": exec_res.order_ids.get("leg1"),
+                    "token_id_0": token_id_0,
+                    "token_id_1": token_id_1,
+                    "shares_0": exec_res.filled_shares,
+                    "shares_1": exec_res.filled_shares,
+                    "shares": exec_res.filled_shares,
+                    "price_0": exec_res.price_0,
+                    "price_1": exec_res.price_1,
+                    "invested_usd": exec_res.cash_out,
+                    "fees_usd": exec_res.fees_usd,
+                    "locked_edge_usd": exec_res.locked_edge_usd,
+                    "expected_payout": round(exec_res.filled_shares * 1.0, 2),
+                    "expected_profit_usd": exec_res.locked_edge_usd,
+                    "profit_pct": round((exec_res.locked_edge_usd / max(exec_res.cash_out, 0.01)) * 100, 2),
+                    "entry_time": time.strftime("%H:%M:%S"),
+                    "entry_timestamp": time.time(),
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+                }
+                self.live_orders[bag_key] = record
+                logger.info(
+                    f"⚡ [原子实盘双腿成交锁死] 市场: {question[:30]} | 份额: {exec_res.filled_shares} | "
+                    f"实出资金: {exec_res.cash_out:.4f}U | 锁定净利: +{exec_res.locked_edge_usd:.4f}U"
+                )
+                return record
+            except Exception as e:
+                logger.error(f"[原子执行网关异常] {e}")
                 return None
 
-            actual_usd = cost_0 + cost_1
-            expected_payout = round(req_shares * 1.0, 2)
-            expected_profit = round(expected_payout - actual_usd, 2)
-            profit_pct = round((expected_profit / max(actual_usd, 0.01)) * 100, 2)
-            bag_key = market_id or f"mkt-{id_0[:8]}"
-
-            logger.info(f"⚡ [100% 稳胜配对成功] 市场: {question[:30]} | YES: {id_0[:8]} ({req_shares}份) | NO: {id_1[:8]} ({req_shares}份) | 总成本: {actual_usd}U | 到期硬兑现: {expected_payout}U (+{profit_pct}%)")
-
-            record = {
-                "id": f"live-bag-{int(time.time()*1000)}",
-                "market_id": bag_key,
-                "status": "HOLDING_LOCK",
-                "mode": "live",
-                "question": question,
-                "pair_cost": round(safe_p0 + safe_p1, 4),
-                "order_id_0": id_0,
-                "order_id_1": id_1,
-                "token_id_0": token_id_0,
-                "token_id_1": token_id_1,
-                "shares_0": req_shares,
-                "shares_1": req_shares,
-                "shares": req_shares,
-                "price_0": safe_p0,
-                "price_1": safe_p1,
-                "invested_usd": actual_usd,
-                "expected_profit_usd": expected_profit,
-                "profit_pct": profit_pct,
-                "entry_time": time.strftime("%H:%M:%S"),
-                "entry_timestamp": time.time(),
-                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-            }
-            self.live_orders[bag_key] = record
-            return record
-
-        except Exception as e:
-            logger.error(f"[实盘下单失败] {e}")
-            return {"status": "ERROR", "error": str(e)}
+        logger.warning("🛑 [执行器未就绪] atomic_executor 尚未初始化，拒绝发单")
+        return None
 
     def close_parity_position(self, market_id: str, bid_0: float = 0.0, bid_1: float = 0.0) -> bool:
         """实盘自动/手动均值回归平仓，回收现金与净利"""
@@ -308,17 +353,17 @@ class LiveClobExecutor:
 
         try:
             from py_clob_client_v2.clob_types import OrderArgs, OrderType
-            # 卖出 YES 份额
+            # 卖出 YES 份额 (FAK 立即成交剩余取消，杜绝挂单悬空)
             if rec.get("token_id_0") and rec.get("shares_0", 0) > 0 and safe_b0 > 0:
                 s_order_0 = OrderArgs(token_id=rec["token_id_0"], price=safe_b0, size=rec["shares_0"], side="SELL")
                 signed_0 = self.client.create_order(s_order_0)
-                self.client.post_order(signed_0, OrderType.GTC)
+                self.client.post_order(signed_0, OrderType.FAK)
 
-            # 卖出 NO 份额
+            # 卖出 NO 份额 (FAK 立即成交剩余取消，杜绝挂单悬空)
             if rec.get("token_id_1") and rec.get("shares_1", 0) > 0 and safe_b1 > 0:
                 s_order_1 = OrderArgs(token_id=rec["token_id_1"], price=safe_b1, size=rec["shares_1"], side="SELL")
                 signed_1 = self.client.create_order(s_order_1)
-                self.client.post_order(signed_1, OrderType.GTC)
+                self.client.post_order(signed_1, OrderType.FAK)
 
             self.cumulative_pnl += profit
             logger.info(f"💰 [实盘闪电平仓成功] 市场: {rec.get('question','')[:20]} | 回收现金: {payout}U | 见利落袋: {profit:+.2f}U")
@@ -395,7 +440,7 @@ class LiveClobExecutor:
                     self.usdc_balance = round(clob_usdc, 4)
                 else:
                     # 动态合并入金底账与已实现收益
-                    base = float(os.getenv("INITIAL_BALANCE", "4.0"))
+                    base = float(os.getenv("INITIAL_BALANCE", "6.98"))
                     self.usdc_balance = round(max(0.0, base + self.cumulative_pnl), 4)
                 self._last_balance_check = now
             except Exception as e:
