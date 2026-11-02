@@ -1,0 +1,25 @@
+# 关键凭证与私钥安全拦截 (绝不上传远程仓库)
+.env
+*.env
+.env.*
+
+# Python 运行时缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# 运行日志与实时数据文件
+data/
+*.log
+*.jsonl
+
+# 编辑器与系统文件
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
