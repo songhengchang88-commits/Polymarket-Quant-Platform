@@ -112,10 +112,34 @@ class AtomicPairExecutor:
     def _cancel_quiet(self, order_id: Optional[str]) -> None:
         if not order_id:
             return
+        for name in ("cancel_orders", "cancel_order", "cancel"):
+            fn = getattr(self.client, name, None)
+            if fn is None:
+                continue
+            try:
+                if name == "cancel_orders":
+                    fn([order_id])
+                else:
+                    fn(order_id)
+                return
+            except Exception:
+                continue
+
+    def _panic_cancel_all(self) -> bool:
+        """下单异常后的兜底: 交易所可能已收单, 只是回执丢了。
+
+        这是实盘最危险的状态 —— 本地以为失败, 实际已挂单。不撤干净就会重复下单。
+        """
+        fn = getattr(self.client, "cancel_all", None)
+        if fn is None:
+            return False
         try:
-            self.client.cancel(order_id)
-        except Exception:
-            pass
+            out = fn()
+            self._log({"type": "PANIC_CANCEL", "result": str(out)[:300]})
+            return True
+        except Exception as exc:
+            self._log({"type": "PANIC_CANCEL_FAILED", "error": str(exc)[:300]})
+            return False
 
     def _unwind(self, token_id: str, shares: float, bid: float) -> bool:
         """把已成交的单腿按买一价 FAK 卖出, 尽量消除敞口。"""
@@ -174,8 +198,10 @@ class AtomicPairExecutor:
         try:
             resp_0 = self._buy_fok(token_0, p0, shares)
         except Exception as exc:
-            self._log({"type": "ERROR", "market_id": market_id, "leg": 0, "error": str(exc)})
-            return ExecutionResult(status="ERROR", reasons=[f"leg0: {exc}"])
+            # 超时不等于失败: 交易所可能已经收单。必须全撤并标记 UNKNOWN。
+            self._panic_cancel_all()
+            self._log({"type": "UNKNOWN", "market_id": market_id, "leg": 0, "error": str(exc)})
+            return ExecutionResult(status="UNKNOWN", reasons=[f"leg0 提交异常(可能已成交): {exc}"])
 
         filled_0, status_0, oid_0 = self._parse_fill(resp_0, shares)
         if filled_0 < shares - EPS:

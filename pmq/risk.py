@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import List, Tuple
 
@@ -15,6 +16,8 @@ class Book:
     ask: float
     ts: float
     tick: float = 0.01
+    bid_size: float = 0.0      # 买一可成交份额
+    ask_size: float = 0.0      # 卖一可成交份额
 
     @property
     def spread(self) -> float:
@@ -48,6 +51,8 @@ class GateResult:
     reasons: List[str] = field(default_factory=list)
 
     def fail(self, reason: str) -> "GateResult":
+        # 关键: 必须同时翻转 ok, 否则"登记了拒绝原因但闸门依然放行"
+        self.ok = False
         self.reasons.append(reason)
         return self
 
@@ -105,9 +110,11 @@ def max_shares_for_budget(
     if pair <= 0:
         return 0.0, ["配对价格非法"]
     raw = budget_usd / pair
-    shares = round(raw / limits.size_step) * limits.size_step
-    shares = float(int(shares / limits.size_step + 1e-9)) * limits.size_step
+    # 必须向下取整: 用 round 会向上进位, 造成"预算 100 却需要 100.0032"这类超限
+    shares = math.floor(raw / limits.size_step + 1e-9) * limits.size_step
     shares = round(shares, 6)
+    while shares > 0 and shares * pair > budget_usd + 1e-12:
+        shares = round(shares - limits.size_step, 6)
 
     if shares <= 0:
         return 0.0, ["预算不足一份"]

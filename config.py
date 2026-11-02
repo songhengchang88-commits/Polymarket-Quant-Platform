@@ -1,5 +1,14 @@
 import os
 
+# [修复 2026-11-02] 之前没有任何代码加载 .env, 导致 os.getenv 全部为空,
+# 实盘客户端永远 is_ready=False。这里显式加载, 且不覆盖已存在的环境变量。
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"), override=False)
+except Exception:
+    pass
+
 # 基础目录配置 (E盘)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")

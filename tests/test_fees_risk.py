@@ -24,7 +24,7 @@ def test_locked_edge_goes_negative_with_fees():
 
 
 def _books(now=1000.0):
-    return Book(bid=0.48, ask=0.49, ts=now), Book(bid=0.49, ask=0.49, ts=now)
+    return Book(bid=0.48, ask=0.49, ts=now), Book(bid=0.48, ask=0.49, ts=now)
 
 
 def test_gate_passes_on_sane_book():

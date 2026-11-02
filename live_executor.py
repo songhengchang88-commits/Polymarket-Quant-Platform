@@ -42,9 +42,26 @@ class LiveClobExecutor:
         self.live_orders: Dict[str, Dict] = {}
         self.usdc_balance = self.initial_deposit_usd
         self._last_balance_check = 0.0
+        self.deadman = None
 
         if self.private_key and self.private_key != "YOUR_PRIVATE_KEY_HERE":
             self._init_clob_v2_client()
+
+        # 启动死人开关守卫 (保护 6.98U 离线零残留)
+        self._init_deadman_switch()
+
+    def _init_deadman_switch(self):
+        try:
+            from pmq.execution.deadman import DeadManSwitch
+            self.deadman = DeadManSwitch(
+                cancel_callback=self.cancel_all_orders,
+                heartbeat_timeout_sec=30.0,
+                name="LiveDeadManGuard",
+            )
+            self.deadman.start_watchdog()
+            logger.info("🛡️ [死人开关就绪] 进程级退出保护与 30s 看门狗已上线")
+        except Exception as e:
+            logger.warning(f"死人开关启动轻微提示: {e}")
 
     def _init_clob_v2_client(self):
         """使用 py-clob-client-v2 初始化官方 CLOB V2 客户端"""
@@ -61,6 +78,11 @@ class LiveClobExecutor:
                 key=self.private_key,
                 signature_type=sig_type,
                 funder=self.funder if sig_type != 0 else None,
+                # [修复 2026-11-02] 默认 retry_on_error=False: 一次网络抖动就把
+                # PolyApiException(status_code=None) 抛到界面。开启重试 + 服务器时间,
+                # 同时规避本地时钟漂移导致的签名失败(偶发 401/400 的常见根因)。
+                retry_on_error=True,
+                use_server_time=True,
             )
             # 派生或创建 L2 API 凭证
             creds = self.client.create_or_derive_api_key()

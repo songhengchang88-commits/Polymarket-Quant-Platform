@@ -12,6 +12,11 @@ class FakeClient:
         self.script = list(script)
         self.posts = []
         self.cancelled = []
+        self.panic_calls = 0
+
+    def cancel_all(self):
+        self.panic_calls += 1
+        return {"canceled": [], "not_canceled": {}}
 
     def create_order(self, args):
         return {"token_id": args.token_id, "price": args.price, "size": args.size, "side": args.side}
@@ -118,14 +123,18 @@ def test_partial_fill_on_leg0_is_unwound(tmp_path):
     assert "a1" in client.cancelled
 
 
-def test_exception_on_first_leg_returns_error_not_raise(tmp_path):
-    client = FakeClient([RuntimeError("network down")])
-    ex, _ = _executor(client, tmp_path)
+def test_exception_on_first_leg_triggers_panic_cancel(tmp_path):
+    """超时不等于失败: 交易所可能已收单, 必须全撤并标记 UNKNOWN。"""
+    client = FakeClient([RuntimeError("read timed out")])
+    ex, journal = _executor(client, tmp_path)
     b0, b1 = _books()
 
     res = _run(ex, b0, b1)
-    assert res.status == "ERROR"
-    assert "network down" in res.reasons[0]
+    assert res.status == "UNKNOWN"
+    assert client.panic_calls == 1
+    assert "read timed out" in res.reasons[0]
+    types = [e["type"] for e in journal.read_all()]
+    assert "UNKNOWN" in types and "PANIC_CANCEL" in types
 
 
 def test_stale_book_is_rejected_before_any_order(tmp_path):

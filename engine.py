@@ -82,6 +82,9 @@ class QuantEngine:
     def _monitor_loop(self):
         while self.is_running:
             try:
+                # 喂狗保持死人开关活跃
+                if hasattr(self.live_executor, "deadman") and self.live_executor.deadman:
+                    self.live_executor.deadman.heartbeat()
                 self.scan_once()
             except Exception as e:
                 logger.error(f"扫描轮询异常: {e}")
