@@ -27,6 +27,7 @@ from pmq.execution.atomic import AtomicPairExecutor, ExecutionResult
 from pmq import risk
 from pmq.fees import CostModel
 from pmq.journal import Journal
+from pmq.notify import notifier
 
 
 class LiveClobExecutor:
@@ -292,6 +293,10 @@ class LiveClobExecutor:
                     )
                     if exec_res.has_exposure:
                         logger.critical(f"🚨 [单腿暴露紧急熔断] 存在单腿未平敞口 {exec_res.unhedged_shares}，立即启动全撤守卫！")
+                        notifier.send(
+                            "🚨 [单腿暴露熔断警报]",
+                            f"市场: {question[:35]}\n未对冲敞口: {exec_res.unhedged_shares:.4f}\n原因: {', '.join(exec_res.reasons)}\n系统坚守零亏损铁律，已启动全额紧急撤单！"
+                        )
                         self.cancel_all_orders()
                     return None
 
@@ -327,6 +332,10 @@ class LiveClobExecutor:
                 logger.info(
                     f"⚡ [原子实盘双腿成交锁死] 市场: {question[:30]} | 份额: {exec_res.filled_shares} | "
                     f"实出资金: {exec_res.cash_out:.4f}U | 锁定净利: +{exec_res.locked_edge_usd:.4f}U"
+                )
+                notifier.send(
+                    "⚡ [实盘双腿锁定成交]",
+                    f"市场: {question[:35]}\n成交份数: {exec_res.filled_shares} 份\n买入总支出: {exec_res.cash_out:.4f} USDC\n到期硬锁定收益: +{exec_res.locked_edge_usd:.4f} USDC\n100% 零裸持对冲完成！"
                 )
                 return record
             except Exception as e:
@@ -416,6 +425,7 @@ class LiveClobExecutor:
                 res = self.client.cancel_all()
                 self.live_orders.clear()
                 logger.info("🛑 [实盘撤单] 已向 CLOB 发起全额撤单")
+                notifier.send("🛑 [全额撤单执行]", "死人看门狗或用户触发全撤，已向 Polymarket CLOB 发起全额订单清空！")
                 return res
             except Exception as e:
                 logger.error(f"撤单失败: {e}")

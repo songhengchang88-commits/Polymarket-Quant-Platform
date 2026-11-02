@@ -327,6 +327,27 @@ def cmd_markout(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_notify(args: argparse.Namespace) -> int:
+    from pmq.notify import notifier
+
+    if not notifier.has_any_channel:
+        print("[WARN] 未在 .env 中检测到任何免费通知通道配置！")
+        print("[*] 支持以下任意一种 100% 完全免费方案：")
+        print("  1. 微信 PushPlus:  PUSHPLUS_TOKEN=xxxx (微信扫码即可, 免费200条/天)")
+        print("  2. 微信 WxPusher:  WXPUSHER_APP_TOKEN=xxxx, WXPUSHER_UID=xxxx (终身免费1000条/天)")
+        print("  3. 企业微信 Webhook: WECHAT_WEBHOOK_URL=https://qyapi.weixin.qq.com/... (官方免费无限量)")
+        print("  4. QQ Qmsg 酱:     QMSG_KEY=xxxx (QQ扫码即可)")
+        print("  5. QQ 邮箱 SMTP:   SMTP_USER=xxx@qq.com, SMTP_PASS=xxxx (手机微信+手机QQ双弹窗)")
+        return 1
+
+    title = args.title or "实盘哨兵巡航"
+    content = args.message or "6.98U 实盘防御资金就绪，死人看门狗全天候在线。"
+    print(f"正在向已配置通道广播: [{title}] {content}")
+    res = notifier.send(title, content)
+    print("投递结果:", res)
+    return 0 if res.get("ok") else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="pmq", description="Polymarket 量化执行内核 CLI")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -384,6 +405,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_markout.add_argument("--file", default=os.path.join("data", "markout_samples.jsonl"))
     p_markout.add_argument("--horizons", default="60,180,300")
     p_markout.set_defaults(func=cmd_markout)
+
+    p_notify = sub.add_parser("notify", help="向微信/QQ免费通道发送一条测试消息")
+    p_notify.add_argument("message", nargs="?", default="6.98U 实盘防御资金就绪，死人看门狗在线。")
+    p_notify.add_argument("--title", default="实盘哨兵巡航")
+    p_notify.set_defaults(func=cmd_notify)
+
     return parser
 
 
