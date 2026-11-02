@@ -1,0 +1,338 @@
+import json
+import os
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+notebooks_dir = os.path.join(BASE_DIR, "notebooks")
+os.makedirs(notebooks_dir, exist_ok=True)
+notebook_path = os.path.join(notebooks_dir, "Polymarket_Quant_Colab.ipynb")
+
+cells = []
+
+# Cell 1: Markdown Title & Badge
+cells.append({
+    "cell_type": "markdown",
+    "metadata": {},
+    "source": [
+        "# 🌌 Polymarket Quant Platform // Colab 云端深度分析与实时监控大屏\n",
+        "\n",
+        "[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/songhengchang88-commits/Polymarket-Quant-Platform/blob/main/notebooks/Polymarket_Quant_Colab.ipynb)\n",
+        "\n",
+        "---\n",
+        "### 核心能力与架构：\n",
+        "1. **📡 实时交易数据流与多通道监控**：支持公网直连 Polymarket 官方 Gamma/CLOB API，或穿透对接本地量化引擎；\n",
+        "2. **📊 盘口深度与科学计算**：利用 Colab 免费云端算力，计算全网点差分布 (Spread Distribution)、Markout 胜率与蒙特卡洛资金模拟；\n",
+        "3. **🤖 Gemini Pro 智能量化投顾**：集成 Google Gemini 1.5 Pro，输入实时深度盘口切片，全自动输出华尔街级风控诊断与黑天鹅预警。\n"
+    ]
+})
+
+# Cell 2: Code - Dependencies
+cells.append({
+    "cell_type": "code",
+    "execution_count": None,
+    "metadata": {},
+    "outputs": [],
+    "source": [
+        "# 1. 安装核心科学计算、可视化与 Gemini AI 依赖\n",
+        "!pip install -q plotly pandas numpy requests google-generativeai\n",
+        "print('✅ 科学计算、交互图表与 Gemini SDK 依赖安装完毕！')\n"
+    ]
+})
+
+# Cell 3: Markdown Section 1
+cells.append({
+    "cell_type": "markdown",
+    "metadata": {},
+    "source": [
+        "## 📡 第一部分：实时交易数据流与多通道监控\n",
+        "- **公网云端直连模式 (全球可用)**：直接从 Polymarket 官方 API 抓取成交量前 50 的主力预测市场，计算配对成本与利差；\n",
+        "- **本地节点穿透模式**：若本地启动了 `ngrok http 8888`，填入 URL 即可实时对账 6.98U 实盘账本与看门狗状态。\n"
+    ]
+})
+
+# Cell 4: Code - Data Fetcher
+cells.append({
+    "cell_type": "code",
+    "execution_count": None,
+    "metadata": {},
+    "outputs": [],
+    "source": [
+        "import requests\n",
+        "import pandas as pd\n",
+        "import numpy as np\n",
+        "import time\n",
+        "import json\n",
+        "import plotly.graph_objects as go\n",
+        "from plotly.subplots import make_subplots\n",
+        "from IPython.display import display, clear_output, HTML\n",
+        "\n",
+        "# 配置监控数据源\n",
+        "LOCAL_TUNNEL_URL = ''  # @param {type:'string'}\n",
+        "GAMMA_API_URL = 'https://gamma-api.polymarket.com/markets?limit=50&active=true&closed=false&order=volume24hr&ascending=false'\n",
+        "\n",
+        "def fetch_live_data():\n",
+        "    \"\"\"优先从本地穿透节点获取实盘账本，否则从官方公网拉取 50 大活跃市场\"\"\"\n",
+        "    if LOCAL_TUNNEL_URL:\n",
+        "        try:\n",
+        "            url = f\"{LOCAL_TUNNEL_URL.rstrip('/')}/api/status\"\n",
+        "            r = requests.get(url, timeout=5)\n",
+        "            if r.status_code == 200:\n",
+        "                return 'local', r.json()\n",
+        "        except Exception as e:\n",
+        "            print(f'本地节点连接提示: {e}，自动回退到公网实时行情')\n",
+        "            \n",
+        "    try:\n",
+        "        resp = requests.get(GAMMA_API_URL, timeout=8)\n",
+        "        if resp.status_code == 200:\n",
+        "            markets = resp.json()\n",
+        "            rows = []\n",
+        "            for m in markets:\n",
+        "                prices = json.loads(m.get('outcomePrices', '[]')) if isinstance(m.get('outcomePrices'), str) else m.get('outcomePrices', [])\n",
+        "                if len(prices) >= 2:\n",
+        "                    try:\n",
+        "                        p0 = float(prices[0])\n",
+        "                        p1 = float(prices[1])\n",
+        "                        pair_cost = p0 + p1\n",
+        "                        rows.append({\n",
+        "                            'id': str(m.get('id', '')),\n",
+        "                            'question': str(m.get('question', ''))[:40],\n",
+        "                            'volume_24h': float(m.get('volume24hr', 0)),\n",
+        "                            'price_0': p0,\n",
+        "                            'price_1': p1,\n",
+        "                            'pair_cost': round(pair_sum := p0 + p1, 4),\n",
+        "                            'taker_edge': round(1.0 - pair_sum, 4),\n",
+        "                            'safe_range': (0.36 <= p0 <= 0.64) and (0.36 <= p1 <= 0.64),\n",
+        "                        })\n",
+        "                    except Exception:\n",
+        "                        continue\n",
+        "            return 'gamma', pd.DataFrame(rows)\n",
+        "    except Exception as e:\n",
+        "        print(f'公网抓取异常: {e}')\n",
+        "    return 'empty', pd.DataFrame()\n",
+        "\n",
+        "print('✅ 数据抓取引擎初始化完成！')\n"
+    ]
+})
+
+# Cell 5: Code - Live Dashboard Loop
+cells.append({
+    "cell_type": "code",
+    "execution_count": None,
+    "metadata": {},
+    "outputs": [],
+    "source": [
+        "# 运行动态实时监控大屏 (连续运行 5 轮，每轮间隔 3 秒)\n",
+        "for iteration in range(5):\n",
+        "    mode, data = fetch_live_data()\n",
+        "    clear_output(wait=True)\n",
+        "    \n",
+        "    if mode == 'local':\n",
+        "        acc = data.get('account', {})\n",
+        "        live = data.get('live_status', {})\n",
+        "        display(HTML(f'''\n",
+        "        <div style=\"background:#030712; padding:16px; border-radius:12px; color:#e2e8f0; font-family:monospace; border:1px solid #00f3ff;\">\n",
+        "            <h3 style=\"margin:0; color:#00f3ff;\">⚡ POLYMARKET QUANT TERMINAL // 本地实盘单一真源对账</h3>\n",
+        "            <p style=\"color:#94a3b8; font-size:12px;\">更新时间: {time.strftime('%Y-%m-%d %H:%M:%S')} | 模式: LIVE 实盘</p>\n",
+        "            <div style=\"display:flex; gap:16px; margin-top:10px;\">\n",
+        "                <div style=\"background:#0f172a; padding:10px 16px; border-radius:8px;\">\n",
+        "                    <div style=\"font-size:11px; color:#64748b;\">链上实盘真实可用</div>\n",
+        "                    <div style=\"font-size:22px; font-weight:bold; color:#f43f5e;\">${acc.get('current_cash', 6.98)} USDC</div>\n",
+        "                </div>\n",
+        "                <div style=\"background:#0f172a; padding:10px 16px; border-radius:8px;\">\n",
+        "                    <div style=\"font-size:11px; color:#64748b;\">45% 仓位硬锁上限</div>\n",
+        "                    <div style=\"font-size:22px; font-weight:bold; color:#38bdf8;\">${live.get('max_order_usd', 3.14)}U</div>\n",
+        "                </div>\n",
+        "                <div style=\"background:#0f172a; padding:10px 16px; border-radius:8px;\">\n",
+        "                    <div style=\"font-size:11px; color:#64748b;\">真实成交流水</div>\n",
+        "                    <div style=\"font-size:22px; font-weight:bold; color:#4ade80;\">{acc.get('trades_count', 0)} 笔 (胜率 {acc.get('win_rate_pct', 0.0)}%)</div>\n",
+        "                </div>\n",
+        "            </div>\n",
+        "        </div>\n",
+        "        '''))\n",
+        "    elif mode == 'gamma' and isinstance(data, pd.DataFrame) and not data.empty:\n",
+        "        df = data\n",
+        "        valid_opps = df[df['pair_cost'] <= 0.985]\n",
+        "        in_budget_zone = df[df['safe_range'] == True]\n",
+        "        min_cost = df['pair_cost'].min()\n",
+        "        \n",
+        "        display(HTML(f'''\n",
+        "        <div style=\"background:#030712; padding:16px; border-radius:12px; color:#e2e8f0; font-family:monospace; border:1px solid #00f3ff;\">\n",
+        "            <h3 style=\"margin:0; color:#00f3ff;\">🌌 POLYMARKET QUANT TERMINAL // COLAB 云端实时大屏</h3>\n",
+        "            <p style=\"color:#94a3b8; font-size:12px;\">时间: {time.strftime('%Y-%m-%d %H:%M:%S')} | 轮次: {iteration+1}/5 | 数据源: 官方公网实时行情</p>\n",
+        "            <div style=\"display:flex; gap:16px; margin-top:10px;\">\n",
+        "                <div style=\"background:#0f172a; padding:10px 16px; border-radius:8px;\">\n",
+        "                    <div style=\"font-size:11px; color:#64748b;\">实时扫描盘口</div>\n",
+        "                    <div style=\"font-size:20px; font-weight:bold; color:#38bdf8;\">{len(df)} 个</div>\n",
+        "                </div>\n",
+        "                <div style=\"background:#0f172a; padding:10px 16px; border-radius:8px;\">\n",
+        "                    <div style=\"font-size:11px; color:#64748b;\">Taker 利差机会 (&le;0.985)</div>\n",
+        "                    <div style=\"font-size:20px; font-weight:bold; color:{'#4ade80' if len(valid_opps)>0 else '#f87171'};\n",
+        "                    \">{len(valid_opps)} 个</div>\n",
+        "                </div>\n",
+        "                <div style=\"background:#0f172a; padding:10px 16px; border-radius:8px;\">\n",
+        "                    <div style=\"font-size:11px; color:#64748b;\">6.98U 可买区间 [0.36~0.64]</div>\n",
+        "                    <div style=\"font-size:20px; font-weight:bold; color:#fbbf24;\">{len(in_budget_zone)} 个</div>\n",
+        "                </div>\n",
+        "                <div style=\"background:#0f172a; padding:10px 16px; border-radius:8px;\">\n",
+        "                    <div style=\"font-size:11px; color:#64748b;\">全网最低配对成本</div>\n",
+        "                    <div style=\"font-size:20px; font-weight:bold; color:#a78bfa;\">{min_cost:.4f}</div>\n",
+        "                </div>\n",
+        "            </div>\n",
+        "        </div>\n",
+        "        '''))\n",
+        "        \n",
+        "        # 绘制实时点差柱状图\n",
+        "        top_df = df.head(15)\n",
+        "        fig = go.Figure()\n",
+        "        fig.add_trace(go.Bar(\n",
+        "            x=top_df['question'],\n",
+        "            y=top_df['pair_cost'],\n",
+        "            marker_color=np.where(top_df['pair_cost'] <= 0.985, '#4ade80', '#00f3ff'),\n",
+        "            name='配对买入成本 (Ask0 + Ask1)'\n",
+        "        ))\n",
+        "        fig.add_hline(y=0.985, line_dash='dash', line_color='#f43f5e', annotation_text='0.985 Taker 红线')\n",
+        "        fig.update_layout(\n",
+        "            title='Top 15 活跃市场实时配对成本雷达',\n",
+        "            template='plotly_dark',\n",
+        "            yaxis=dict(range=[0.94, 1.03], title='配对总成本'),\n",
+        "            xaxis=dict(tickangle=35),\n",
+        "            height=400,\n",
+        "            margin=dict(l=40, r=40, t=50, b=120)\n",
+        "        )\n",
+        "        fig.show()\n",
+        "    time.sleep(3)\n"
+    ]
+})
+
+# Cell 6: Markdown Section 2 - Science
+cells.append({
+    "cell_type": "markdown",
+    "metadata": {},
+    "source": [
+        "## 🔬 第二部分：科学计算与 6.98U 蒙特卡洛资金演化模拟\n",
+        "在坚守 **45% 仓位硬锁 (3.14U)**、**单腿 $1.15 底线** 与 **FOK 零单腿裸持** 铁律下：\n",
+        "- 假设每笔成功配对净利：`+0.035 USDC`\n",
+        "- 假设发生单腿滑点亏损：`-0.15 USDC` (一次亏损抵消 4~5 笔盈利)\n",
+        "以下推演 50 条随机演化轨迹，科学揭示资金曲线的数学客观规律。\n"
+    ]
+})
+
+# Cell 7: Code - Monte Carlo
+cells.append({
+    "cell_type": "code",
+    "execution_count": None,
+    "metadata": {},
+    "outputs": [],
+    "source": [
+        "import numpy as np\n",
+        "import plotly.graph_objects as go\n",
+        "\n",
+        "np.random.seed(42)\n",
+        "INITIAL_CASH = 6.98\n",
+        "TRIALS = 50\n",
+        "STEPS = 80\n",
+        "WIN_RATE = 0.95  # 95% 高胜率假设\n",
+        "WIN_PAYOUT = 0.035\n",
+        "LOSS_PER_FAILURE = 0.15\n",
+        "\n",
+        "paths = np.zeros((TRIALS, STEPS))\n",
+        "paths[:, 0] = INITIAL_CASH\n",
+        "\n",
+        "for t in range(TRIALS):\n",
+        "    for s in range(1, STEPS):\n",
+        "        cur = paths[t, s-1]\n",
+        "        if cur <= 2.30:  # 资金低于两腿底线 (2 x 1.15U)，无法再开仓\n",
+        "            paths[t, s] = cur\n",
+        "            continue\n",
+        "        is_win = np.random.rand() < WIN_RATE\n",
+        "        change = WIN_PAYOUT if is_win else -LOSS_PER_FAILURE\n",
+        "        paths[t, s] = max(0.0, cur + change)\n",
+        "\n",
+        "fig = go.Figure()\n",
+        "for t in range(TRIALS):\n",
+        "    fig.add_trace(go.Scatter(y=paths[t], mode='lines', line=dict(width=1), opacity=0.35, showlegend=False))\n",
+        "\n",
+        "fig.add_trace(go.Scatter(y=np.median(paths, axis=0), mode='lines', line=dict(color='#00f3ff', width=3), name='中位数稳健轨迹'))\n",
+        "fig.add_hline(y=INITIAL_CASH, line_dash='dot', line_color='#fbbf24', annotation_text='初始资金 6.98U')\n",
+        "fig.add_hline(y=2.30, line_dash='dash', line_color='#f43f5e', annotation_text='最小开仓红线 2.30U')\n",
+        "\n",
+        "fig.update_layout(\n",
+        "    title='6.98U 本金蒙特卡洛资金模拟 (50条演化路径)',\n",
+        "    template='plotly_dark',\n",
+        "    xaxis_title='交易笔数 (Trades)',\n",
+        "    yaxis_title='账户资产 (USDC)',\n",
+        "    height=420,\n",
+        ")\n",
+        "fig.show()\n"
+    ]
+})
+
+# Cell 8: Markdown Section 3 - Gemini Pro
+cells.append({
+    "cell_type": "markdown",
+    "metadata": {},
+    "source": [
+        "## 🤖 第三部分：Google Gemini Pro 智能量化研判\n",
+        "利用 Colab 原生集成的 Google Gemini 1.5 Pro 模型，对最新实时盘口数据做华尔街级风控研判。\n"
+    ]
+})
+
+# Cell 9: Code - Gemini Pro Analyst
+cells.append({
+    "cell_type": "code",
+    "execution_count": None,
+    "metadata": {},
+    "outputs": [],
+    "source": [
+        "import google.generativeai as genai\n",
+        "\n",
+        "# 免费从 https://aistudio.google.com 获取 API Key 填入下方\n",
+        "GEMINI_API_KEY = ''  # @param {type:'string'}\n",
+        "\n",
+        "if GEMINI_API_KEY:\n",
+        "    genai.configure(api_key=GEMINI_API_KEY)\n",
+        "    model = genai.GenerativeModel('gemini-1.5-pro-latest')\n",
+        "    \n",
+        "    # 获取最新 5 个盘口切片\n",
+        "    _, df_markets = fetch_live_data()\n",
+        "    if isinstance(df_markets, pd.DataFrame) and not df_markets.empty:\n",
+        "        slice_str = df_markets.head(5)[['question', 'pair_cost', 'volume_24h', 'safe_range']].to_string()\n",
+        "        \n",
+        "        prompt = f\"\"\"\n",
+        "        你是一位顶级高频量化与预测市场首席风控官。\n",
+        "        当前我们的实盘账户有 6.98 USDC 防御资金，仓位硬锁 45% (3.14U)，单腿底线 1.15U，执行零裸持铁律。\n",
+        "        以下是 Polymarket 最新的 5 个主力市场深度盘口快照：\n",
+        "        {slice_str}\n",
+        "        \n",
+        "        请简明扼要给出专业诊断：\n",
+        "        1. 盘口质量与是否存在真实无风险利差 (ask0+ask1 <= 0.985)？\n",
+        "        2. 6.98U 本金在这些市场中的可操作性诊断 (为何大选两极化盘口无法进场)？\n",
+        "        3. 给当前阶段的最高风控指令。\n",
+        "        \"\"\"\n",
+        "        print('🤖 正在调用 Gemini 1.5 Pro 进行深度量化研判...')\n",
+        "        resp = model.generate_content(prompt)\n",
+        "        display(HTML(f'''\n",
+        "        <div style=\"background:#064e3b; padding:16px; border-radius:10px; border:1px solid #10b981; color:#ecfdf5; font-family:sans-serif;\">\n",
+        "            <h4 style=\"margin:0 0 10px 0; color:#34d399;\">✅ Gemini 1.5 Pro 量化风控研判报告</h4>\n",
+        "            <div style=\"white-space: pre-wrap; line-height:1.6;\">{resp.text}</div>\n",
+        "        </div>\n",
+        "        '''))\n",
+        "else:\n",
+        "    print('💡 提示: 填入 GEMINI_API_KEY 即可解锁 Gemini 1.5 Pro 全自动智能研判！')\n"
+    ]
+})
+
+nb = {
+    "cells": cells,
+    "metadata": {
+        "colab": {"provenance": []},
+        "kernelspec": {"display_name": "Python 3", "name": "python3"},
+        "language_info": {"name": "python"}
+    },
+    "nbformat": 4,
+    "nbformat_minor": 0
+}
+
+with open(notebook_path, "w", encoding="utf-8") as f:
+    json.dump(nb, f, indent=2, ensure_ascii=False)
+
+print("SUCCESS: Notebook generated at", notebook_path)
