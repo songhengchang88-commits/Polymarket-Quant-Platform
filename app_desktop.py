@@ -19,7 +19,7 @@ import urllib.request
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 os.chdir(BASE_DIR)
 
-SERVER_URL = "http://127.0.0.1:8888"
+SERVER_URL = "http://127.0.0.1:8888/?v=3.0"
 PROFILE_DIR = os.path.join(BASE_DIR, "data", "app_profile")
 os.makedirs(PROFILE_DIR, exist_ok=True)
 
@@ -64,7 +64,33 @@ def ensure_server():
         except Exception:
             pass
 
+def kill_old_instances():
+    """彻底终止残留的同 profile 浏览器后台进程，防止复用旧缓存窗口"""
+    try:
+        cmd = [
+            "powershell", "-NoProfile", "-Command",
+            "Get-CimInstance Win32_Process -Filter \"name = 'msedge.exe'\" | "
+            "Where-Object { $_.CommandLine -match 'app_profile' } | "
+            "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+        ]
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+    except Exception:
+        pass
+
+def clear_cache():
+    """清理本地 Profile 缓存目录"""
+    for sub in ["Cache", "Code Cache", "Service Worker"]:
+        p = os.path.join(PROFILE_DIR, "Default", sub)
+        if os.path.exists(p):
+            try:
+                import shutil
+                shutil.rmtree(p, ignore_errors=True)
+            except Exception:
+                pass
+
 def main():
+    kill_old_instances()
+    clear_cache()
     ensure_server()
 
     browser = find_browser()
@@ -82,6 +108,9 @@ def main():
         "--window-position=80,40",
         "--enable-gpu-rasterization",
         "--enable-zero-copy",
+        "--disk-cache-size=1",
+        "--media-cache-size=1",
+        "--disable-application-cache",
         "--disable-features=Translate",
         "--no-first-run",
         "--no-default-browser-check"

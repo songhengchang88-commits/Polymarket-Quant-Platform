@@ -12,6 +12,7 @@ import uvicorn
 import config
 from engine import QuantEngine
 from polymarket_ws import ws_feed
+from quantum_hud import CYBERPUNK_HUD_HTML
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("server")
@@ -694,6 +695,17 @@ class AiCmdReq(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 def index():
+    return HTMLResponse(
+        CYBERPUNK_HUD_HTML,
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
+
+@app.get("/legacy", response_class=HTMLResponse)
+def legacy_index():
     return HTML_CONTENT
 
 class ExecutionModeReq(BaseModel):
