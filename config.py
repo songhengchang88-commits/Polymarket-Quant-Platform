@@ -30,9 +30,36 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 
 # 运行模式: 'paper' (模拟盘) 或 'live' (实盘)
 EXECUTION_MODE = os.getenv("EXECUTION_MODE", "paper")  # 阶段0止血: 默认原为 live, 改为 paper; 实盘须显式设置环境变量
-# TODO(阶段0待实现): 下两行钱包/funder 地址不应有硬编码默认值, 应改为缺失即启动报错(仅注释标记, 逻辑待阶段1改)
-FUNDER_ADDRESS = os.getenv("FUNDER_ADDRESS", "0x735e49143B19989E8c2BE88EdE72e96c1d0500dc")
-PROXY_WALLET = os.getenv("WALLET_ADDRESS", "0x514F13a326A93AEDA4522B973707e8602c2BCEFd")
+# 阶段1-B 配置硬化: 钱包/funder 地址不再有硬编码默认值, 只能由环境变量提供 (缺失即为空)
+FUNDER_ADDRESS = os.getenv("FUNDER_ADDRESS", "")
+PROXY_WALLET = os.getenv("WALLET_ADDRESS", "")
+
+
+def live_prerequisites_missing():
+    """实盘前置校验 (阶段1-B): 返回缺失项名称列表, 空列表表示齐备。
+
+    启动校验与 EXECUTION_MODE 切 live 的路径 (server.set_mode) 共用本函数。
+    """
+    missing = []
+    if not FUNDER_ADDRESS:
+        missing.append("FUNDER_ADDRESS")
+    if not PROXY_WALLET:
+        missing.append("WALLET_ADDRESS")
+    if not os.getenv("PMQ_ADMIN_TOKEN", ""):
+        missing.append("PMQ_ADMIN_TOKEN")
+    return missing
+
+
+# 启动校验 (阶段1-B): 实盘模式缺地址即报错退出 (fail-closed);
+# paper 模式缺地址仅警告, 但切 live 时会被 live_prerequisites_missing() 拦截。
+if EXECUTION_MODE == "live":
+    _missing_addr = [n for n, v in (("FUNDER_ADDRESS", FUNDER_ADDRESS), ("WALLET_ADDRESS", PROXY_WALLET)) if not v]
+    if _missing_addr:
+        raise SystemExit(f"[config] EXECUTION_MODE=live 但未设置 {'/'.join(_missing_addr)} 环境变量, 拒绝启动")
+elif not FUNDER_ADDRESS or not PROXY_WALLET:
+    import warnings
+
+    warnings.warn("[config] 未设置 FUNDER_ADDRESS/WALLET_ADDRESS: paper 模式可运行, 禁止切换实盘", stacklevel=2)
 
 # 零亏损铁律与资金调度 (不能亏钱，必须盈利)
 INITIAL_BALANCE_USD = float(os.getenv("INITIAL_BALANCE", "36.91"))

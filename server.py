@@ -3,13 +3,14 @@ import logging
 import os
 import time
 from typing import Dict, List, Optional
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 import uvicorn
 
 import config
+from auth import AdminAuthError, verify_admin_token
 from engine import QuantEngine
 from polymarket_ws import ws_feed
 from quantum_hud import CYBERPUNK_HUD_HTML
@@ -27,6 +28,21 @@ app.add_middleware(
 )
 
 engine = QuantEngine()
+
+
+def require_admin(
+    authorization: Optional[str] = Header(default=None),
+    x_admin_token: Optional[str] = Header(default=None, alias="X-Admin-Token"),
+):
+    """写接口统一鉴权依赖 (阶段1-B): 核心逻辑在 auth.verify_admin_token。
+
+    令牌取自环境变量 PMQ_ADMIN_TOKEN; 未设置时 fail-closed 一律拒绝。
+    所有 POST (有副作用) 接口都挂此依赖, 只读 GET 不加。
+    """
+    try:
+        verify_admin_token(authorization, x_admin_token)
+    except AdminAuthError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 HTML_CONTENT = """<!DOCTYPE html>
 <html lang="zh-CN">
@@ -760,8 +776,8 @@ def get_status():
 def get_geoblock():
     return engine.live_executor.check_geoblock()
 
-# TODO(阶段0待实现): 写接口——上线前必须加管理员鉴权(见阶段0变更清单), 当前无任何鉴权
-@app.post("/api/live/test-order")
+# 阶段1-B: 已加管理员鉴权 (require_admin 依赖, 见 auth.py)
+@app.post("/api/live/test-order", dependencies=[Depends(require_admin)])
 def run_test_order():
     if not engine.live_executor.is_ready:
         return {"ok": False, "error": "实盘执行器未就绪"}
@@ -790,9 +806,14 @@ def run_test_order():
     res = engine.live_executor.place_test_order(token_id=target_token, price=0.01, size=5.0)
     return res
 
-# TODO(阶段0待实现): 写接口——上线前必须加管理员鉴权(见阶段0变更清单), 当前无任何鉴权
-@app.post("/api/execution-mode")
+# 阶段1-B: 已加管理员鉴权 (require_admin 依赖, 见 auth.py); 切 live 另经 config 前置校验
+@app.post("/api/execution-mode", dependencies=[Depends(require_admin)])
 def set_mode(req: ExecutionModeReq):
+    if req.mode == "live":
+        missing = config.live_prerequisites_missing()
+        if missing:
+            return {"status": "failed", "mode": engine.execution_mode,
+                    "error": f"缺少实盘前置配置 ({', '.join(missing)}), 拒绝切换实盘"}
     success = engine.set_execution_mode(req.mode)
     return {"status": "ok" if success else "failed", "mode": engine.execution_mode}
 
@@ -801,14 +822,14 @@ def live_preflight():
     res = engine.live_executor.preflight_check()
     return res
 
-# TODO(阶段0待实现): 写接口——上线前必须加管理员鉴权(见阶段0变更清单), 当前无任何鉴权
-@app.post("/api/live/cancel-all")
+# 阶段1-B: 已加管理员鉴权 (require_admin 依赖, 见 auth.py)
+@app.post("/api/live/cancel-all", dependencies=[Depends(require_admin)])
 def live_cancel_all():
     res = engine.live_executor.cancel_all_orders()
     return {"status": "ok", "result": res}
 
-# TODO(阶段0待实现): 写接口——上线前必须加管理员鉴权(见阶段0变更清单), 当前无任何鉴权
-@app.post("/api/account/close-position")
+# 阶段1-B: 已加管理员鉴权 (require_admin 依赖, 见 auth.py)
+@app.post("/api/account/close-position", dependencies=[Depends(require_admin)])
 def close_pos(market_id: str):
     if engine.execution_mode == "live":
         success = engine.live_executor.close_position_manually(market_id)
@@ -816,17 +837,20 @@ def close_pos(market_id: str):
         success = engine.trader.close_position_manually(market_id)
     return {"status": "ok" if success else "failed"}
 
-@app.post("/api/drill")
+# 阶段1-B 补鉴权: 本接口有副作用 (触发演习), 阶段0未标记, 一并纳入 require_admin
+@app.post("/api/drill", dependencies=[Depends(require_admin)])
 def run_drill():
     res = engine.trigger_test_drill()
     return res
 
-@app.post("/api/account/reset")
+# 阶段1-B 补鉴权: 本接口有副作用 (重置账户), 阶段0未标记, 一并纳入 require_admin
+@app.post("/api/account/reset", dependencies=[Depends(require_admin)])
 def reset_acc():
     engine.trader.reset_account()
     return {"status": "ok"}
 
-@app.post("/api/monitor/toggle")
+# 阶段1-B 补鉴权: 本接口有副作用 (启停监控), 阶段0未标记, 一并纳入 require_admin
+@app.post("/api/monitor/toggle", dependencies=[Depends(require_admin)])
 def toggle_mon():
     if engine.is_running:
         engine.stop_monitor()
@@ -834,13 +858,17 @@ def toggle_mon():
         engine.start_monitor()
     return {"is_monitoring": engine.is_running}
 
-@app.post("/api/category")
+# 阶段1-B 补鉴权: 本接口有副作用 (切换扫描品类), 阶段0未标记, 一并纳入 require_admin
+@app.post("/api/category", dependencies=[Depends(require_admin)])
 def change_cat(req: CategoryReq):
     engine.set_category(req.category)
     return {"status": "ok", "current_category": engine.current_category}
 
-# TODO(阶段0待实现): 写接口——上线前必须加管理员鉴权(见阶段0变更清单), 当前无任何鉴权
-@app.post("/api/ai-command")
+# 阶段1-B: 已加管理员鉴权 (require_admin 依赖, 见 auth.py)——此前无鉴权即可把单笔额度改到 40U 的问题随此解决。
+# 注意: 本接口改的 ALLOC_PER_TRADE_USD 只是请求值, 实际单笔硬顶仍由风控常量控制:
+# config.POSITION_CAP_PCT (单笔敞口 <= 可用余额 45%, engine/paper_trader/live_executor 均强制引用)
+# 与 live_executor 的 MAX_ORDER_USD (执行器单笔上限), 本接口无法绕过。
+@app.post("/api/ai-command", dependencies=[Depends(require_admin)])
 def handle_ai_command(req: AiCmdReq):
     cmd = req.command
     reply = ""

@@ -35,8 +35,9 @@ class LiveClobExecutor:
         self.private_key = os.getenv("POLY_PRIVATE_KEY", "").strip()
         self.chain_id = int(os.getenv("POLY_CHAIN_ID", "137"))
         self.host = "https://clob.polymarket.com"
-        self.funder = os.getenv("FUNDER_ADDRESS", "0x735e49143B19989E8c2BE88EdE72e96c1d0500dc").strip()
-        self.wallet_address = os.getenv("WALLET_ADDRESS", "0x514f13a326a93aeda4522b973707e8602c2bcefd").strip()
+        # 阶段1-B 配置硬化: 与 config.py 一致, 删硬编码默认地址, 缺失即为空 (实盘前置校验在 config 拦截)
+        self.funder = os.getenv("FUNDER_ADDRESS", "").strip()
+        self.wallet_address = os.getenv("WALLET_ADDRESS", "").strip()
 
         # 风控 (单一真源: 初始资金 6.98U 防御资金，坚守 45% 仓位硬锁与 $1.15 底线)
         self.hard_stop_loss_usd = float(os.getenv("HARD_STOP_LOSS_USD", "1.0"))
