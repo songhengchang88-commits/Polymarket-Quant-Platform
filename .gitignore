@@ -23,3 +23,11 @@ data/
 .idea/
 .DS_Store
 Thumbs.db
+
+# 阶段0止血追加: 敏感节点清单与常见凭据文件 (2026-11-05)
+non_us_nodes.txt
+credentials*
+*secret*
+*.pem
+*.key
+id_rsa*

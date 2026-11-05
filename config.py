@@ -29,7 +29,8 @@ CLOB_API_URL = "https://clob.polymarket.com"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 # 运行模式: 'paper' (模拟盘) 或 'live' (实盘)
-EXECUTION_MODE = os.getenv("EXECUTION_MODE", "live")  # 默认 live 实盘接入，可在前端/环境变量一键切换
+EXECUTION_MODE = os.getenv("EXECUTION_MODE", "paper")  # 阶段0止血: 默认原为 live, 改为 paper; 实盘须显式设置环境变量
+# TODO(阶段0待实现): 下两行钱包/funder 地址不应有硬编码默认值, 应改为缺失即启动报错(仅注释标记, 逻辑待阶段1改)
 FUNDER_ADDRESS = os.getenv("FUNDER_ADDRESS", "0x735e49143B19989E8c2BE88EdE72e96c1d0500dc")
 PROXY_WALLET = os.getenv("WALLET_ADDRESS", "0x514F13a326A93AEDA4522B973707e8602c2BCEFd")
 

@@ -20,7 +20,7 @@ logger = logging.getLogger("server")
 app = FastAPI(title="PolyArbitrage Bloomberg Terminal")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://127.0.0.1:8888", "http://localhost:8888"],  # 阶段0止血: 原为 ["*"] 全开, 现仅留 localhost 白名单占位
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -760,6 +760,7 @@ def get_status():
 def get_geoblock():
     return engine.live_executor.check_geoblock()
 
+# TODO(阶段0待实现): 写接口——上线前必须加管理员鉴权(见阶段0变更清单), 当前无任何鉴权
 @app.post("/api/live/test-order")
 def run_test_order():
     if not engine.live_executor.is_ready:
@@ -789,6 +790,7 @@ def run_test_order():
     res = engine.live_executor.place_test_order(token_id=target_token, price=0.01, size=5.0)
     return res
 
+# TODO(阶段0待实现): 写接口——上线前必须加管理员鉴权(见阶段0变更清单), 当前无任何鉴权
 @app.post("/api/execution-mode")
 def set_mode(req: ExecutionModeReq):
     success = engine.set_execution_mode(req.mode)
@@ -799,11 +801,13 @@ def live_preflight():
     res = engine.live_executor.preflight_check()
     return res
 
+# TODO(阶段0待实现): 写接口——上线前必须加管理员鉴权(见阶段0变更清单), 当前无任何鉴权
 @app.post("/api/live/cancel-all")
 def live_cancel_all():
     res = engine.live_executor.cancel_all_orders()
     return {"status": "ok", "result": res}
 
+# TODO(阶段0待实现): 写接口——上线前必须加管理员鉴权(见阶段0变更清单), 当前无任何鉴权
 @app.post("/api/account/close-position")
 def close_pos(market_id: str):
     if engine.execution_mode == "live":
@@ -835,6 +839,7 @@ def change_cat(req: CategoryReq):
     engine.set_category(req.category)
     return {"status": "ok", "current_category": engine.current_category}
 
+# TODO(阶段0待实现): 写接口——上线前必须加管理员鉴权(见阶段0变更清单), 当前无任何鉴权
 @app.post("/api/ai-command")
 def handle_ai_command(req: AiCmdReq):
     cmd = req.command
@@ -856,5 +861,5 @@ def handle_ai_command(req: AiCmdReq):
     return {"status": "ok", "reply": reply}
 
 if __name__ == "__main__":
-    print(f"[INFO] 彭博多模态全链条套利平台启动成功: http://0.0.0.0:{config.WEB_PORT}")
-    uvicorn.run(app, host="0.0.0.0", port=config.WEB_PORT, log_level="warning")
+    print(f"[INFO] 彭博多模态全链条套利平台启动成功: http://127.0.0.1:{config.WEB_PORT}")
+    uvicorn.run(app, host="127.0.0.1", port=config.WEB_PORT, log_level="warning")  # 阶段0止血: 原绑 0.0.0.0 全网暴露, 改回本地
