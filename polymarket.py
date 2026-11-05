@@ -248,7 +248,12 @@ class PolymarketClient:
 
             rot_need = limit - anchor_count
             if rotating_pool:
+                swapped_out_tokens = []
                 if (now - self._last_rotation_time) > config.POOL_ROTATION_INTERVAL:
+                    prev_rotating = rotating_pool[self._pool_offset : self._pool_offset + rot_need]
+                    if len(prev_rotating) < rot_need:
+                        prev_rotating += rotating_pool[:(rot_need - len(prev_rotating))]
+                    swapped_out_tokens = [t for m in prev_rotating for t in m.get("clob_token_ids", [])]
                     self._pool_offset = (self._pool_offset + 12) % max(1, len(rotating_pool) - rot_need + 1)
                     self._last_rotation_time = now
                     self._rotation_wave += 1
@@ -257,6 +262,9 @@ class PolymarketClient:
                 selected_rotating = rotating_pool[self._pool_offset : self._pool_offset + rot_need]
                 if len(selected_rotating) < rot_need:
                     selected_rotating += rotating_pool[:(rot_need - len(selected_rotating))]
+                if swapped_out_tokens:
+                    kept_tokens = {t for m in selected_rotating for t in m.get("clob_token_ids", [])}
+                    ws_feed.unsubscribe_tokens([t for t in swapped_out_tokens if t not in kept_tokens])
                 return anchors + selected_rotating
 
         return valid_markets[:limit]
