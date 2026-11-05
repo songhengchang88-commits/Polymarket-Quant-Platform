@@ -6,7 +6,7 @@ import time
 from typing import Dict, List, Optional
 
 import config
-from polymarket import PolymarketClient
+from market_feed import PolymarketClient
 from arbitrage_scanner import ArbitrageScanner
 from paper_trader import PaperTrader
 from live_executor import LiveClobExecutor

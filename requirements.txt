@@ -1,0 +1,20 @@
+# Polymarket-Quant-Platform 依赖锁定（2026-11-06 集成前置生成）
+# 版本依据：stage1 venv-step01 已装并通过步0/步1 影子比对验证的版本。
+# 无版本证据的包列在文末「待核定」区，只写包名不写版本，禁止臆填。
+
+# --- 官方 SDK（精确锁定，迁移主线） ---
+polymarket-client==0.16.0
+
+# --- 运行时依赖（venv-step01 已装版本） ---
+requests==2.34.2
+urllib3==2.8.0
+websockets==15.0.1
+pydantic==2.14.3
+
+# --- 待核定（本机任何环境均未安装、仓库代码无版本证据，装环境时另行定版） ---
+# fastapi            # server.py Web 框架，未定版
+# uvicorn            # server.py ASGI 服务器，未定版
+# python-dotenv      # config.py / live_executor.py / pmq/cli.py / tools/livetest.py，未定版
+# py-clob-client-v2  # live_executor.py / tools/livetest.py / pmq/execution/atomic.py 在用的旧 V2 客户端（迁移后应随旧依赖清零移除），未定版
+# py-clob-client     # pmq/execution/atomic.py 的旧版回退 import，未定版
+# pytest             # tests/ 测试运行器（仅开发/测试），未定版
