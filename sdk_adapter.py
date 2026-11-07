@@ -39,7 +39,7 @@ sdk_adapter.py — py-sdk 迁移适配层（阶段 1 步 0 骨架 + 步 1 行情
         "id": str, "question": str, "slug": str,
         "clob_token_ids": [yes_token, no_token],
         "outcome_0": str, "outcome_1": str,
-        "volume": float, "volume24hr": float, "liquidity": float,
+        "volume": float | None, "volume24hr": float | None, "liquidity": float | None,
         "end_date": str,                       # ISO 字符串
         "condition_id": str | None,
         "active": bool | None, "closed": bool | None,
@@ -129,24 +129,26 @@ def _f(value) -> Optional[float]:
 def orderbook_to_dict(book, latency_ms: float = 0.0) -> Dict:
     """py-sdk OrderBook -> 我方 Book dict。
 
-    SDK 排序约定（models/clob/order_book.py）：bids 升序（最低在前）、asks 降序（最高在前），
-    故 best_bid = bids[-1]、best_ask = asks[-1]；我方统一输出 bids 降序 / asks 升序。
-    空盘默认值沿用旧 REST 语义：best_bid=0.0、best_ask=1.0。
+    排序不信任上游约定（加固 A-06）：SDK 仅以 docstring 约定 bids 升序、
+    asks 降序且无 validator，本函数一律按价格显式排序（bids 降序 /
+    asks 升序），best_* 由排序后首档推导，全链单一口径。
+    空侧 best_* 输出 None（加固 A-04）：旧 0.0/1.0 哨兵会被下游当真实
+    价格算出 100%/70% 的伪造价差，None 才能让消费者走「无数据」口径。
     """
-    bids_desc = [
-        {"price": float(level.price), "size": float(level.size)}
-        for level in reversed(book.bids)
-    ]
-    asks_asc = [
-        {"price": float(level.price), "size": float(level.size)}
-        for level in reversed(book.asks)
-    ]
+    bids_desc = sorted(
+        ({"price": float(level.price), "size": float(level.size)}
+         for level in book.bids),
+        key=lambda lv: lv["price"], reverse=True)
+    asks_asc = sorted(
+        ({"price": float(level.price), "size": float(level.size)}
+         for level in book.asks),
+        key=lambda lv: lv["price"])
     ts = book.timestamp
     return {
         "token_id": str(book.asset_id),
-        "best_bid": bids_desc[0]["price"] if bids_desc else 0.0,
+        "best_bid": bids_desc[0]["price"] if bids_desc else None,
         "best_bid_size": bids_desc[0]["size"] if bids_desc else 0.0,
-        "best_ask": asks_asc[0]["price"] if asks_asc else 1.0,
+        "best_ask": asks_asc[0]["price"] if asks_asc else None,
         "best_ask_size": asks_asc[0]["size"] if asks_asc else 0.0,
         "depth_count": len(bids_desc) + len(asks_asc),
         "bids_count": len(bids_desc),
@@ -183,9 +185,12 @@ def market_to_dict(market) -> Dict:
         ],
         "outcome_0": yes.label or "Yes",
         "outcome_1": no.label or "No",
-        "volume": volume or 0.0,
-        "volume24hr": _f(metrics.volume_24hr) or 0.0,
-        "liquidity": _f(metrics.liquidity_num if metrics.liquidity_num is not None else metrics.liquidity) or 0.0,
+        # 量字段保留 None（加固 A-05）：`or 0.0` 会把 Gamma「无数据」
+        # 压成真实零成交，scoring 的 unknown 三态分支成死代码、否决
+        # 留痕失真。缺失就报缺失，由 scoring 裁决。
+        "volume": volume,
+        "volume24hr": _f(metrics.volume_24hr),
+        "liquidity": _f(metrics.liquidity_num if metrics.liquidity_num is not None else metrics.liquidity),
         "end_date": end_date.isoformat() if end_date is not None else "",
         "condition_id": str(market.condition_id) if market.condition_id else None,
         "active": state.active,
@@ -254,20 +259,12 @@ class SdkReadOnlyAdapter:
         start = time.time()
         books = self._client().get_order_books(token_ids=token_ids)
         latency = (time.time() - start) * 1000
-        results: Dict[str, Dict] = {str(b.asset_id): orderbook_to_dict(b, latency_ms=latency) for b in books}
-        # SDK 未返回的 token 按旧语义给出空盘占位，不静默丢弃
-        for tid in token_ids:
-            if tid not in results:
-                results[tid] = {
-                    "token_id": tid, "best_bid": 0.0, "best_bid_size": 0.0,
-                    "best_ask": 1.0, "best_ask_size": 0.0,
-                    "depth_count": 0, "bids_count": 0, "asks_count": 0,
-                    "latency_ms": latency, "bids": [], "asks": [],
-                    "tick_size": None, "min_order_size": None,
-                    "last_trade_price": None, "neg_risk": None,
-                    "condition_id": None, "timestamp": None,
-                }
-        return results
+        # SDK 未返回的 token 直接缺席，不再补空盘占位（加固 A-02）：占位盘
+        # 在 build_pool 里触发否决、在 step_round 里却被当「在场」绕过
+        # 失败判定，同一哨兵两个消费方语义相反。缺席是唯一诚实表示——
+        # runner 的「腿缺席 → 数据失败」路径会接住它。
+        return {str(b.asset_id): orderbook_to_dict(b, latency_ms=latency)
+                for b in books}
 
     def get_last_trade_price(self, token_id: str) -> Optional[float]:
         """最新成交价（无成交返回 None）。"""
@@ -288,11 +285,17 @@ class SdkReadOnlyAdapter:
         对应旧 polymarket.py:get_top_volume_markets 的数据来源（gamma /markets），
         但不含旧代码的本地筛选/分类/轮动逻辑（那是消费方职责）。
         """
+        # Gamma 单页上限 100：旧实现只取 first_page()，limit>100 也只能拿到 100 个
+        # 候选（2026-11-07 实测：limit=300 仍只回 100）。改走 iter_items() 跨页取满。
         paginator = self._client().list_markets(
-            closed=False, order="volume24hr", ascending=False, page_size=limit
+            closed=False, order="volume24hr", ascending=False, page_size=100
         )
-        items = paginator.first_page().items
-        return [market_to_dict(m) for m in items[:limit]]
+        items = []
+        for m in paginator.iter_items():
+            items.append(market_to_dict(m))
+            if len(items) >= limit:
+                break
+        return items
 
     def get_market_by_token(self, token_id: str) -> Optional[Dict]:
         """按 clob token 反查市场元数据（SDK get_market 无 token 入口，走 list_markets 过滤）。"""

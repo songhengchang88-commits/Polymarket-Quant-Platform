@@ -35,8 +35,11 @@ paper_engine.py — 纸面同构做市引擎核心（阶段 2 第一步：纸面
 
 from __future__ import annotations
 
+import json
+import os
+
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Callable, Dict, List, Optional
 
@@ -66,6 +69,7 @@ STATE_HALTED = "HALTED"              # 全停：全撤、不报价
 MAX_MARKET_EXPOSURE_PCT = 10.0    # §6.2：单市场库存敞口 ≤ 净值 10%
 MAX_TOTAL_EXPOSURE_PCT = 60.0     # §6.2：总库存敞口 ≤ 净值 60%（现金 ≥40%）
 QUOTE_MIN_SCORE = 50.0            # §5.2：入选纸面跟踪阈值（main 80 / watch 65）
+QUOTE_MIN_RATIO = 0.50            # A-01 口径：score_ratio（得分/可达满分）入选线，与 paper 段下限一致
 DEFAULT_SEED_USD = "200"          # §12.1：种子金上限 $200（纸面初始资金默认）
 DEFAULT_TARGET_SHARES = "20"      # §6.2：单笔 = 目标份额最小档，奖励门槛 20 股起步
 SKEW_WIDEN_PCT = 50.0             # §6.2：单腿净库存达上限 50% → 该方向后撤一档
@@ -75,6 +79,7 @@ EXPIRY_REDUCE_H = 24.0            # §6.2：到期前 24h 存量降至上限 30%
 EXPIRY_CLEAR_H = 6.0              # §6.2：到期前 6h 原则清零
 EXPIRY_REDUCE_CAP_PCT = 30.0      # §6.2：24h 窗口的库存上限比例（对卖单目标口径）
 DAILY_LOSS_HALT_PCT = 2.0         # §6.3：单日亏损 −2% → 当日停市（最小实现）
+_SHANGHAI_TZ = timezone(timedelta(hours=8))  # 交易日日界，与 risk_breaker 同口径
 MARKOUT_HORIZON_SEC = 300         # §2/§7：markout 采样窗口 5 分钟
 
 # 分数段份额系数【方案 §5.2 动作 + 自拟数值】：
@@ -110,12 +115,32 @@ def _s2m(shares) -> int:
     return shares_to_micro(Decimal(str(shares)))
 
 
+def _best_micro(book: Dict, key: str, levels_key: str) -> Optional[int]:
+    """最优价 micro：优先 best_* 字段，缺失时回退 levels 首档 price，
+    再缺失返回 None（加固 L1-14：上游字段口径变化时不许 KeyError 整步崩溃）。"""
+    raw = book.get(key)
+    if raw is None:
+        levels = book.get(levels_key) or []
+        if levels:
+            raw = levels[0].get("price")
+    if raw is None:
+        return None
+    try:
+        return _p2m(raw)
+    except Exception:  # noqa: BLE001 — 畸形价格按无盘口处理
+        return None
+
+
 def _mid_micro(book: Dict) -> Optional[int]:
     """Book dict → 中间价 micro。空盘（无双边）返回 None。"""
     bids, asks = book.get("bids") or [], book.get("asks") or []
     if not bids or not asks:
         return None
-    return (_p2m(book["best_bid"]) + _p2m(book["best_ask"])) // 2
+    bid = _best_micro(book, "best_bid", "bids")
+    ask = _best_micro(book, "best_ask", "asks")
+    if bid is None or ask is None:
+        return None
+    return (bid + ask) // 2
 
 
 def _parse_end_date(raw: str) -> Optional[datetime]:
@@ -197,7 +222,8 @@ class PaperEngine:
                  queue_haircut: float = SELF_QUEUE_HAIRCUT,
                  breaker: Optional[Callable[["PaperEngine"], bool]] = None,
                  event_provider: Optional[Callable[[str, datetime], bool]] = None,
-                 on_halt: Optional[Callable[[str], None]] = None):
+                 on_halt: Optional[Callable[[str], None]] = None,
+                 state_file: Optional[str] = None):
         if ledger.mode != "paper":
             raise ValueError("纸面引擎只接受 paper 账本（live 隔离，见 mm_ledger）")
         self.ledger = ledger
@@ -221,24 +247,79 @@ class PaperEngine:
         self._last_mid: Dict[str, int] = {}                   # token → 最近中间价 micro
         self._mid_hist: Dict[str, List[tuple]] = {}           # market → [(ts_sec, yes_mid_float)]
         self._markout_tasks: List[Dict] = []                  # 待采样任务
-        self._seq = 0
+        # 订单号防重：重启后 _seq 从账本已有最大序号续接，否则
+        # client_order_id（paper-<市场>-<seq>）会撞唯一约束（2026-11-07 实测）。
+        # 续接走账本 SQL 聚合（MmLedger.max_client_order_seq，口径与旧的
+        # 全表 Python 遍历严格等价）：旧遍历在百万行量级实测 ~11.5s/百万行
+        # 且行 dict 全量进内存，是长跑重启耗时的主要构成之一（加固线 2）。
+        self._seq = ledger.max_client_order_seq("paper-")
 
         self._halted_reason: Optional[str] = None
+        self._halt_kind: Optional[str] = None  # day_loss=引擎日亏自触发（可落盘/跨日自恢复）；external=外部注入（runner 的 RiskBreaker 每启重演，不落盘）
         self._hb_stale = False        # 心跳 on_stale 挂钩：停发新单（不开新仓）
         self._hb_dead = False         # 心跳 on_dead 挂钩：闩锁全停（须 clear_halt 复位）
         self._day_anchor_date = None  # 当日净值锚（§6.3 日亏口径）
         self._day_anchor_equity: Optional[int] = None
+        # 引擎状态落盘（加固 L1-03/L1-05）：日锚与日亏闩锁跨重启恢复，
+        # 日界统一 Asia/Shanghai（与 risk_breaker._day_key 同口径）。
+        self._state_file = state_file
+        if self._state_file:
+            self._load_engine_state()
 
         self.stats = {
             "quotes_placed": 0,
             "quotes_blocked_limit": 0,   # 报价路径被仓位规则拦截计数
             "fills": 0,
+            "fills_without_mid": 0,      # 成交时无中间价、以成交价为 markout 参照（L1-01）
             "fills_rejected_limit": 0,   # 成交路径被仓位规则拦截计数
             "cancels": 0,
             "markouts_sampled": 0,
             "markouts_pending_no_book": 0,
             "halts": 0,
         }
+
+    # -- 引擎状态落盘（日锚 + 日亏闩锁） ---------------------------------------
+
+    def _save_engine_state(self) -> None:
+        if not self._state_file:
+            return
+        payload = {
+            "version": 1,   # 状态文件版本（线 B 兼容性契约：loader 须容忍未知/缺失字段）
+            "day_anchor_date": self._day_anchor_date.isoformat()
+                               if self._day_anchor_date else None,
+            "day_anchor_equity": self._day_anchor_equity,
+            # 只落盘引擎自触发的日亏闩锁：外部闩锁（RiskBreaker）由 runner
+            # 每次启动按其持久状态重演，落盘反而会在熔断已恢复时误锁。
+            "halted_reason": self._halted_reason
+                             if self._halt_kind == "day_loss" else None,
+            "halt_kind": self._halt_kind
+                         if self._halt_kind == "day_loss" else None,
+        }
+        tmp = self._state_file + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        os.replace(tmp, self._state_file)
+
+    def _load_engine_state(self) -> None:
+        try:
+            with open(self._state_file, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except (OSError, ValueError):
+            return  # 无文件/损坏 → 全新状态（日锚首步重建，口径不变）
+        if not isinstance(raw, dict):
+            return
+        d = raw.get("day_anchor_date")
+        if d:
+            try:
+                from datetime import date as _date
+                self._day_anchor_date = _date.fromisoformat(d)
+            except ValueError:
+                self._day_anchor_date = None
+        eq = raw.get("day_anchor_equity")
+        self._day_anchor_equity = int(eq) if eq is not None else None
+        if raw.get("halted_reason") and raw.get("halt_kind") == "day_loss":
+            self._halted_reason = str(raw["halted_reason"])
+            self._halt_kind = "day_loss"
 
     # -- 注册与注入 -----------------------------------------------------------
 
@@ -256,7 +337,15 @@ class PaperEngine:
             if not score_result.get("vetoed"):
                 sc = score_result.get("score")
                 band = score_result.get("band")
-                quotable = band in BAND_SIZE_FACTOR and sc is not None and sc >= QUOTE_MIN_SCORE
+                # 入选门槛与 scoring 的 band 同口径（加固 A-01）：有
+                # score_ratio（实得分/可达满分）时按比例判定，不再拿
+                # 100 分制的 QUOTE_MIN_SCORE 卡 61 分制的原始分。
+                ratio = score_result.get("score_ratio")
+                if ratio is not None:
+                    quotable = band in BAND_SIZE_FACTOR and ratio >= QUOTE_MIN_RATIO
+                else:
+                    quotable = band in BAND_SIZE_FACTOR and sc is not None \
+                        and sc >= QUOTE_MIN_SCORE
         elif score is not None:
             sc = float(score)
             band = _band_of(sc)
@@ -267,6 +356,13 @@ class PaperEngine:
             else self._base_shares_micro,
             end_dt=_parse_end_date(market.get("end_date") or ""),
         )
+        old = self._markets.get(market_id)
+        if old is not None:
+            # 重注册只更新评分/可报价性（加固 L1-11）：§11 信号注入的
+            # reduce_only、事件窗口与当前状态不许被一次重注册无声抹除。
+            reg.state, reg.state_reason = old.state, old.state_reason
+            reg.reduce_only_signal = old.reduce_only_signal
+            reg.event_window = old.event_window
         self._markets[market_id] = reg
         self._positions.setdefault(market_id, {})
         return {"market_id": market_id, "score": sc, "band": band, "quotable": quotable}
@@ -281,10 +377,12 @@ class PaperEngine:
 
     # -- 熔断 / 心跳挂钩 -------------------------------------------------------
 
-    def trip_halt(self, reason: str) -> None:
+    def trip_halt(self, reason: str, *, kind: str = "external") -> None:
         if self._halted_reason is None:
             self._halted_reason = reason
+            self._halt_kind = kind
             self.stats["halts"] += 1
+            self._save_engine_state()
             if self._on_halt:
                 self._on_halt(reason)
 
@@ -292,7 +390,9 @@ class PaperEngine:
         """人工复位：清 HALTED 与心跳 dead 闩锁（对齐 heartbeat_loop 的
         dead 闩锁口径——恢复被接受不自动开闸，须显式复位）。"""
         self._halted_reason = None
+        self._halt_kind = None
         self._hb_dead = False
+        self._save_engine_state()
 
     def on_heartbeat_stale(self) -> None:
         """心跳挂钩（heartbeat_loop.HeartbeatLoop 的 on_stale 回调口径，
@@ -472,20 +572,43 @@ class PaperEngine:
             pos["shares_micro"] += fill_shares_micro
             pos["cost_micro"] += amount_micro
         else:
+            # 成本基按平均成本扣减（加固 L1-02）：旧实现按卖出成交额扣，
+            # 盈利分批卖出后成本转负、敞口错账。整数尾差归最后一次卖出：
+            # 卖满时整额扣完，成本恒 ≥0 且清仓归零（runner 回放同口径）。
+            held_before = pos["shares_micro"]
+            if held_before > 0:
+                if fill_shares_micro >= held_before:
+                    cost_reduction = pos["cost_micro"]
+                else:
+                    cost_reduction = (pos["cost_micro"] * fill_shares_micro
+                                      // held_before)
+                cost_reduction = max(0, min(cost_reduction, pos["cost_micro"]))
+            else:
+                cost_reduction = 0
             pos["shares_micro"] -= fill_shares_micro
-            pos["cost_micro"] -= amount_micro
+            pos["cost_micro"] -= cost_reduction
         order.filled_micro += fill_shares_micro
         self.ledger.update_order_status(
             order.ledger_order_id,
             "filled" if order.remaining_micro <= 0 else "partially_filled")
         self.stats["fills"] += 1
+        # markout 任务无条件登记（加固 L1-01，P0）：成交时盘口单边无中间价
+        # 时，旧实现静默不登记、样本集与成交集不一致且无痕。新口径：以
+        # 成交价为参照登记，样本 source 标 paper_sim_nofillmid 以便闸门
+        # 汇总时可识别、可剔除重算，另有 fills_without_mid 计数留痕。
+        task = {
+            "fill_id": fill_id, "market_id": order.market_id,
+            "token_id": order.token_id, "side": order.side,
+            "due_ms": int(now.timestamp() * 1000) + MARKOUT_HORIZON_SEC * 1000,
+        }
         if mid_at_fill_micro is not None:
-            self._markout_tasks.append({
-                "fill_id": fill_id, "market_id": order.market_id,
-                "token_id": order.token_id, "side": order.side,
-                "mid_at_fill_micro": mid_at_fill_micro,
-                "due_ms": int(now.timestamp() * 1000) + MARKOUT_HORIZON_SEC * 1000,
-            })
+            task["mid_at_fill_micro"] = mid_at_fill_micro
+            task["markout_source"] = "paper_sim"
+        else:
+            task["mid_at_fill_micro"] = order.price_micro
+            task["markout_source"] = "paper_sim_nofillmid"
+            self.stats["fills_without_mid"] += 1
+        self._markout_tasks.append(task)
         return fill_id
 
     def _evaluate_fills(self, market_id: str, books: Dict, now: datetime) -> List[Dict]:
@@ -553,7 +676,8 @@ class PaperEngine:
                 token_id=task["token_id"], side=task["side"],
                 mid_at_fill_micro=task["mid_at_fill_micro"],
                 mid_at_horizon_micro=mid_now,
-                horizon_sec=MARKOUT_HORIZON_SEC, source="paper_sim")
+                horizon_sec=MARKOUT_HORIZON_SEC,
+                source=task.get("markout_source", "paper_sim"))
             self.stats["markouts_sampled"] += 1
             sampled.append({"sample_id": sample_id, **task, "mid_now_micro": mid_now})
         self._markout_tasks = remaining
@@ -587,7 +711,11 @@ class PaperEngine:
         n = 0
         for cid, order in list(self._resting.items()):
             if order.market_id == market_id:
-                self.ledger.update_order_status(order.ledger_order_id, "cancelled")
+                # 部分成交过的订单不许覆盖成纯 cancelled（加固 L1-09）：
+                # 按 status 做对账/复盘会把有成交的单误归为零成交撤单。
+                status = ("partially_filled_cancelled" if order.filled_micro > 0
+                          else "cancelled")
+                self.ledger.update_order_status(order.ledger_order_id, status)
                 del self._resting[cid]
                 n += 1
         self.stats["cancels"] += n
@@ -622,7 +750,9 @@ class PaperEngine:
 
             # ---- BUY（开仓/补腿）：§6.2 偏斜 + 仓位校验 ----
             if opening_allowed and base_shares > 0:
-                price = min(mid - half, _p2m(book["best_bid"]))
+                best_bid = _best_micro(book, "best_bid", "bids")
+                price = (min(mid - half, best_bid) if best_bid is not None
+                         else mid - half)
                 leg_exp = self.position_shares_micro(market_id, token_id) * mid // MICRO
                 leg_ratio = (leg_exp * 100.0 / market_cap) if market_cap > 0 else 0.0
                 stop_leg = leg_ratio >= SKEW_STOP_PCT
@@ -645,7 +775,9 @@ class PaperEngine:
             held = self.position_shares_micro(market_id, token_id)
             if sell_allowed and held > 0:
                 sell_shares = min(held, base_shares) if base_shares > 0 else held
-                price = max(mid + half, _p2m(book["best_ask"]))
+                best_ask = _best_micro(book, "best_ask", "asks")
+                price = (max(mid + half, best_ask) if best_ask is not None
+                         else mid + half)
                 price = -((-price) // tick) * tick  # 卖价向上取整到 tick
                 price = max(tick, min(price, MICRO - tick))
                 o = self._place(reg, token_id, "SELL", price, sell_shares)
@@ -657,17 +789,35 @@ class PaperEngine:
     # -- 主步进 -----------------------------------------------------------------
 
     def _update_day_anchor(self, now: datetime) -> None:
-        """§6.3 日亏熔断（最小实现）：以当日首步净值为锚，
-        净值 ≤ 锚 ×(1−2%) → trip_halt。跨日自动换锚。"""
-        today = now.date()
+        """§6.3 日亏熔断：以当日首步净值为锚，净值 ≤ 锚×(1−2%) →
+        trip_halt(kind=day_loss)。日界统一 Asia/Shanghai（加固 L1-05，
+        与 risk_breaker._day_key 同口径）；锚与日亏闩锁落盘跨重启恢复
+        （L1-03）；跨日换锚时仅自恢复日亏类闩锁，外部闩锁不归本函数管。"""
+        aware = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+        today = aware.astimezone(_SHANGHAI_TZ).date()
         if self._day_anchor_date != today:
             self._day_anchor_date = today
             self._day_anchor_equity = self.net_value_micro()
+            if self._halt_kind == "day_loss":
+                self._halted_reason = None
+                self._halt_kind = None
+            self._save_engine_state()
             return
         if self._day_anchor_equity and self._day_anchor_equity > 0:
             floor = self._day_anchor_equity * (1000 - int(DAILY_LOSS_HALT_PCT * 10)) // 1000
             if self.net_value_micro() <= floor and self._halted_reason is None:
-                self.trip_halt(f"单日亏损达 −{DAILY_LOSS_HALT_PCT}%（§6.3 最小实现）")
+                self.trip_halt(f"单日亏损达 −{DAILY_LOSS_HALT_PCT}%（§6.3）",
+                               kind="day_loss")
+
+    def note_books(self, market_id: str, books: Dict[str, Dict]) -> None:
+        """登记某市场最新盘口快照（估值/采样用）：更新 _last_books/_last_mid。
+        on_book 内部调用；runner 对「持仓中但已掉出池」的市场单独调用，
+        使其估值跟随实时中间价而非成本兜底（加固线 3 净值伪影修复）。"""
+        self._last_books[market_id] = books
+        for token_id, book in books.items():
+            mid = _mid_micro(book)
+            if mid is not None:
+                self._last_mid[token_id] = mid
 
     def on_book(self, market_id: str, books: Dict[str, Dict],
                 now: Optional[datetime] = None) -> Dict:
@@ -677,11 +827,7 @@ class PaperEngine:
         now = now or datetime.now(timezone.utc)
         market_id = str(market_id)
         reg = self._markets[market_id]
-        self._last_books[market_id] = books
-        for token_id, book in books.items():
-            mid = _mid_micro(book)
-            if mid is not None:
-                self._last_mid[token_id] = mid
+        self.note_books(market_id, books)
         tokens = reg.market.get("clob_token_ids") or []
         if tokens and tokens[0] in books:
             mid0 = _mid_micro(books[tokens[0]])

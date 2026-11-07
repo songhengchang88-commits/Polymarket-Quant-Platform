@@ -89,9 +89,18 @@ def _parse_end_date(raw: str) -> Optional[datetime]:
 
 
 def _spread_pct(market: Dict, books: Optional[Dict]) -> Optional[float]:
-    """当前盘口价差（%）。优先 Book（YES 腿 best bid/ask），回退 Market 字段。"""
+    """当前盘口价差（%）。按 YES 腿（clob_token_ids[0]）取，回退 Market 字段。
+    加固 L1-12：旧实现遍历 books.values() 取第一条双边腿，结果随 dict
+    插入顺序翻转（同一市场可否决可不否决）。改为确定性取 YES 腿；
+    YES 腿缺盘口时按 token_id 排序兜底，保证与插入顺序无关。"""
     if books:
-        for book in books.values():
+        token_ids = market.get("clob_token_ids") or []
+        ordered = []
+        if token_ids and token_ids[0] in books:
+            ordered.append(books[token_ids[0]])
+        ordered.extend(books[k] for k in sorted(books) if not token_ids
+                       or k != token_ids[0])
+        for book in ordered:
             bid, ask = book.get("best_bid"), book.get("best_ask")
             if bid is not None and ask is not None and ask > 0:
                 return (ask - bid) * 100.0
@@ -168,6 +177,12 @@ def _run_vetoes(market, books, rewards, history, related, manual_flags,
 
     # §5.1-6 盘口深度极薄：目标份额占盘口 >20%
     if books:
+        # 腿盘口缺席先行判定（加固 A-07）：books 只含一条腿时，缺席腿在
+        # 下方迭代中不可见，市场能靠单腿分数混入池。缺席即不可报价。
+        for tid in market.get("clob_token_ids") or []:
+            if tid and tid not in books:
+                hit("5.1-6", f"token {tid} 盘口缺席（批量拉取未返回）")
+                break
         for tid, book in books.items():
             depth = _side_depth_shares(book)
             if depth > 0 and target_shares / depth > VETO_DEPTH_DOMINANCE:
@@ -392,9 +407,29 @@ def score_market(market: Dict, *, books: Optional[Dict] = None,
         })
         result["missing_fields"].extend(missing)
     result["score"] = round(total, 2)
+    # 可达满分口径（加固 A-01）：band 按「实得分 / 可达满分」之比判定。
+    # 生产接线长期只传 books+rewards，activity/history/event_type/related
+    # 恒缺失——旧口径下满分只有 61，§5.2 的 80/65 分段永远不可达、band
+    # 恒为 paper，却仍按 100 分口径呈现，属语义漂移。新口径：分母只算
+    # 已提供输入对应的维度满分；覆盖不全（attainable<100）时 band 上限
+    # 为 watch——没有逆选择维度的数据，不许自称主力市场。
+    attainable = (25.0 if rewards is not None else 0.0) \
+        + (30.0 if books is not None else 0.0) \
+        + (15.0 if activity is not None else 0.0) \
+        + (20.0 if history is not None else 0.0) \
+        + 6.0 + (4.0 if event_type is not None else 0.0)
+    ratio_pct = round(total / attainable * 100.0, 2) if attainable > 0 else 0.0
+    result["score_attainable_max"] = attainable
+    result["score_ratio"] = round(ratio_pct / 100.0, 4)
+    result["coverage"] = round(attainable / 100.0, 2)
     for threshold, band, action in SCORE_BANDS:
-        if total >= threshold:
+        # band 判定与展示口径统一（加固 L1-13）：用 round 后的值判定。
+        if ratio_pct >= threshold:
             result["band"] = band
             result["action"] = action
             break
+    if attainable < 100.0 and result["band"] == "main":
+        result["band"] = "watch"
+        result["action"] = ("观察市场：半份试挂（覆盖不全封顶 watch："
+                            "缺失维度补齐前不评主力）")
     return result

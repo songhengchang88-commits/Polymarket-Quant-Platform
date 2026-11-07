@@ -146,6 +146,8 @@ sampled_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_fills_market ON fills(market_id);
 CREATE INDEX IF NOT EXISTS idx_markout_market ON markout_samples(market_id, horizon_sec);
+CREATE INDEX IF NOT EXISTS idx_orders_mode_status ON orders(mode, status);
+CREATE INDEX IF NOT EXISTS idx_orders_mode_client ON orders(mode, client_order_id);
 """
 
 
@@ -194,6 +196,8 @@ class MmLedger:
         self._check_mode(mode)
         self._check_int("price_micro", price_micro)
         self._check_int("shares_micro", shares_micro)
+        if status not in self.ORDER_STATUSES:
+            raise ValueError(f"非法订单状态：{status!r}")
         now = _now_ms()
         cur = self._conn.execute(
             """INSERT INTO orders (mode, client_order_id, exchange_order_id,
@@ -206,8 +210,14 @@ class MmLedger:
         self._conn.commit()
         return int(cur.lastrowid)
 
+    # 订单状态白名单（加固 L1-08）：账本层拒绝任意字符串落库
+    ORDER_STATUSES = ("open", "partially_filled", "filled", "cancelled",
+                      "partially_filled_cancelled")
+
     def update_order_status(self, order_id: int, status: str,
                             exchange_order_id: Optional[str] = None) -> None:
+        if status not in self.ORDER_STATUSES:
+            raise ValueError(f"非法订单状态：{status!r}")
         self._conn.execute(
             """UPDATE orders SET status=?, updated_at_ms=?,
                    exchange_order_id=COALESCE(?, exchange_order_id)
@@ -223,6 +233,40 @@ class MmLedger:
             args.append(market_id)
         return [dict(r) for r in self._conn.execute(sql, args)]
 
+    def get_open_orders(self) -> List[Dict]:
+        """仅未终结订单（open / partially_filled）——启动恢复专用。
+
+        旧路径用 get_orders() 全表物化后在 Python 里筛 status：账本达
+        百万行量级时每次重启白扫全表（实测 ~11.5s/百万行且行 dict 全量
+        进内存）。本查询走 idx_orders_mode_status，只回未终结行。
+        """
+        return [dict(r) for r in self._conn.execute(
+            "SELECT * FROM orders WHERE mode=? AND status IN ('open','partially_filled')",
+            (self.mode,))]
+
+    def max_client_order_seq(self, prefix: str = "paper-") -> int:
+        """client_order_id 尾随数字段的最大值（引擎订单序号续接用）。
+
+        语义与旧实现等价：旧实现遍历全表、对 startswith(prefix) 的行取
+        最后一个 '-' 之后的 int（不可解析则跳过）。本实现在 SQL 内完成：
+        尾随数字段起点 = length(rtrim(id, 数字集)) + 1，CAST 取值后取
+        MAX，全程走 (mode, client_order_id) 覆盖索引、不物化行。
+        无匹配行返回 0。
+        守卫条件「尾随数字段之前必须是 '-'」保证与旧口径严格等价：
+        形如 paper-abc123 的 id 旧实现 int('abc123') 失败跳过，新实现
+        同样不计。等价性已由 test_line2_resilience 在真实账本副本
+        （6.5 万行）与合成边界 id 上断言。
+        """
+        row = self._conn.execute(
+            """SELECT MAX(CAST(substr(client_order_id,
+                       length(rtrim(client_order_id, '0123456789')) + 1)
+                      AS INTEGER)) AS max_seq
+               FROM orders WHERE mode=? AND client_order_id LIKE ?
+                 AND substr(client_order_id,
+                            length(rtrim(client_order_id, '0123456789')), 1) = '-'""",
+            (self.mode, prefix + "%")).fetchone()
+        return int(row["max_seq"]) if row and row["max_seq"] is not None else 0
+
     # -- 成交 ---------------------------------------------------------------
 
     def record_fill(self, *, order_id: int, market_id: str, token_id: str,
@@ -236,6 +280,24 @@ class MmLedger:
         self._check_int("price_micro", price_micro)
         self._check_int("shares_micro", shares_micro)
         self._check_int("fee_micro", fee_micro)
+        # 累计成交量与订单状态校验（加固 L1-08）：旧实现不查订单剩余量，
+        # 20 股订单可写入 40 股成交。账本层兜底，引擎 bug 不许污染账本。
+        orow = self._conn.execute(
+            "SELECT shares_micro, status FROM orders WHERE id=? AND mode=?",
+            (order_id, self.mode)).fetchone()
+        if orow is None:
+            raise ValueError(f"record_fill：订单不存在 id={order_id}")
+        if orow["status"] not in ("open", "partially_filled"):
+            raise ValueError(
+                f"record_fill：订单状态 {orow['status']!r} 不可再成交 id={order_id}")
+        filled_so_far = self._conn.execute(
+            "SELECT COALESCE(SUM(shares_micro),0) AS s FROM fills "
+            "WHERE order_id=? AND mode=?",
+            (order_id, self.mode)).fetchone()["s"]
+        if filled_so_far + shares_micro > orow["shares_micro"]:
+            raise ValueError(
+                f"record_fill：累计成交 {filled_so_far + shares_micro} 超过 "
+                f"订单量 {orow['shares_micro']} id={order_id}")
         amount_micro = price_micro * shares_micro // MICRO  # 整数乘法推导，见模块头口径
         cur = self._conn.execute(
             """INSERT INTO fills (mode, order_id, exchange_order_id, market_id,
@@ -292,6 +354,14 @@ class MmLedger:
         self._check_mode(mode)
         self._check_int("mid_at_fill_micro", mid_at_fill_micro)
         self._check_int("mid_at_horizon_micro", mid_at_horizon_micro)
+        # 幂等（加固 L1-07）：同一 (fill, horizon) 已有样本则回既有 id，
+        # 不重复写入污染闸门中位数（schema UNIQUE 迁移留待闸门结束后）。
+        existing = self._conn.execute(
+            "SELECT id FROM markout_samples WHERE mode=? AND fill_id=? "
+            "AND horizon_sec=?",
+            (self.mode, fill_id, horizon_sec)).fetchone()
+        if existing is not None:
+            return int(existing["id"])
         markout = compute_markout_micro(side, mid_at_fill_micro, mid_at_horizon_micro)
         cur = self._conn.execute(
             """INSERT INTO markout_samples (mode, fill_id, market_id, token_id,

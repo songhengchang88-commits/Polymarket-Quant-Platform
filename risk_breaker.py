@@ -141,8 +141,23 @@ class RiskBreaker:
     def _load(self) -> _Persisted:
         if not os.path.exists(self.path):
             return _Persisted()
-        with open(self.path, "r", encoding="utf-8") as f:
-            raw = json.load(f)
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            if not isinstance(raw, dict):
+                raise ValueError("state file is not a JSON object")
+        except (OSError, ValueError):
+            # 状态文件损坏（加固 L1-10）：旧实现直接抛 JSONDecodeError，
+            # systemd 托管下会形成启动崩溃死循环。改为坏文件改名留证 +
+            # 以 RECONCILE_HALT 保守初始化（绝不静默按 NORMAL 起）。
+            try:
+                os.replace(self.path, self.path + f".corrupt-{_now_ms()}")
+            except OSError:
+                pass
+            return _Persisted(
+                state=RECONCILE_HALT, state_since_ms=_now_ms(),
+                audit=[{"ts_ms": _now_ms(), "event": "state_file_corrupt",
+                        "action": "renamed_and_init_RECONCILE_HALT"}])
         return _Persisted(
             state=raw.get("state", NORMAL),
             state_since_ms=raw.get("state_since_ms", 0),
@@ -210,8 +225,23 @@ class RiskBreaker:
             return self._decision(snap, now, "账实不符熔断未清除：须先完成对账，"
                                              "再经 clear_reconcile_halt 人工清除")
 
+        # 2.5) 退化快照守卫（加固 L1-06）：净值 ≤0 且无任何基线（全零
+        # 输入）旧实现会一路落空判 NORMAL+can_open，放行一个空账户。
+        # 改为对账停机待人工核对（不判 TERMINATED：全新账户种子注入前
+        # 的瞬时零值不该被终局化）。equity ≤0 但 peak>0 的情形由下方
+        # 终止线接住（回撤 ≥100%）。
+        if equity <= 0 and peak <= 0:
+            self._enter(now, RECONCILE_HALT,
+                        "净值与基线全零：快照无效，全停待人工核对")
+            s.halt_day = None
+            self._save()
+            return self._decision(snap, now, "退化快照（全零）熔断：先核对账本与净值来源")
+
         # 3) 终止线：回撤 ≥30% 当前净值口径（峰值基线相对今值）
-        if equity > 0 and dd * 100 >= DD_TERMINATE_PCT * peak and peak > 0:
+        #    加固 L1-04：去掉 equity>0 前置——旧实现下 equity=0（−100%）
+        #    反而绕过终止线落进 7 天冷却，§12.1-3 铁律在最极端处失效。
+        #    分母是 peak，已有 peak>0 守卫，equity≤0 时 dd≥peak 必触发。
+        if dd * 100 >= DD_TERMINATE_PCT * peak and peak > 0:
             self._enter(now, TERMINATED,
                         f"总回撤 {dd} micro 达峰值 {peak} 的 {DD_TERMINATE_PCT}% 终止线")
             self._save()
