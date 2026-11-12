@@ -1,0 +1,552 @@
+{
+  "schema_version": 1,
+  "updated_at_utc": "2026-11-12T01:58:12Z",
+  "updated_at_cst": "2026-11-12T09:58:12+08:00",
+  "gate": "A",
+  "mode": "paper",
+  "seed_usd": 200.0,
+  "halt_line_usd": 140.0,
+  "round": 13,
+  "nav_usd": 201.559032,
+  "nav_console_usd": 201.559032,
+  "nav_diff_usd": 0.0,
+  "cash_usd": 80.94214,
+  "positions_usd": 120.616892,
+  "positions_tokens": 33,
+  "positions_at_mid": 31,
+  "positions_at_cost": 2,
+  "day_start_usd": 203.84641,
+  "day_pnl_usd": -2.287378,
+  "peak_usd": 204.713462,
+  "circuit": "NORMAL",
+  "halted_reason": null,
+  "fills_count": 98,
+  "orders": {
+    "cancelled": 890199,
+    "filled": 86,
+    "open": 10,
+    "partially_filled_cancelled": 11
+  },
+  "markout": {
+    "source": "paper_sim_genmid",
+    "n": 51,
+    "median_cents": -3.0,
+    "mean_cents": -4.06,
+    "min_cents": -18.4,
+    "max_cents": 4.65,
+    "negative": 46
+  },
+  "pool": {
+    "markets": 30,
+    "built_at": "2026-11-12T01:56:25.304984+00:00",
+    "items": [
+      {
+        "market_id": "6882826",
+        "question": "Jensen Huang announced resignation or removal by December 31, 2026?",
+        "best_bid": 0.85,
+        "best_ask": 0.86,
+        "score": 61.0,
+        "band": "watch"
+      },
+      {
+        "market_id": "665374",
+        "question": "Will the U.S. invade Iran before 2027?",
+        "best_bid": 0.09,
+        "best_ask": 0.1,
+        "score": 61.0,
+        "band": "watch"
+      },
+      {
+        "market_id": "2264328",
+        "question": "Russia x Ukraine ceasefire by December 31, 2026?",
+        "best_bid": 0.057,
+        "best_ask": 0.068,
+        "score": 61.0,
+        "band": "watch"
+      },
+      {
+        "market_id": "3215008",
+        "question": "Will the Fed increase interest rates by 25 bps after the December 2026 meeting?",
+        "best_bid": 0.85,
+        "best_ask": 0.86,
+        "score": 61.0,
+        "band": "watch"
+      },
+      {
+        "market_id": "6884119",
+        "question": "Jensen Huang divorce by December 31, 2026?",
+        "best_bid": 0.19,
+        "best_ask": 0.2,
+        "score": 61.0,
+        "band": "watch"
+      },
+      {
+        "market_id": "1811265",
+        "question": "Pete Hegseth out as Secretary of Defense by December 31?",
+        "best_bid": 0.13,
+        "best_ask": 0.14,
+        "score": 61.0,
+        "band": "watch"
+      },
+      {
+        "market_id": "6440135",
+        "question": "Will Trump speak to Volodymyr Zelenskyy by November 30?",
+        "best_bid": 0.63,
+        "best_ask": 0.65,
+        "score": 61.0,
+        "band": "watch"
+      },
+      {
+        "market_id": "1383905",
+        "question": "Extended FDV above $150M one day after launch?",
+        "best_bid": 0.71,
+        "best_ask": 0.73,
+        "score": 61.0,
+        "band": "watch"
+      },
+      {
+        "market_id": "2243897",
+        "question": "Russia x Ukraine ceasefire agreement by December 31, 2026?",
+        "best_bid": 0.09,
+        "best_ask": 0.1,
+        "score": 61.0,
+        "band": "watch"
+      },
+      {
+        "market_id": "6947942",
+        "question": "Russia x Ukraine energy ceasefire agreement by November 30, 2026?",
+        "best_bid": 0.15,
+        "best_ask": 0.16,
+        "score": 61.0,
+        "band": "watch"
+      },
+      {
+        "market_id": "3580932",
+        "question": "Will Chiang Wan-an win the next Taipei Mayor election?",
+        "best_bid": 0.65,
+        "best_ask": 0.66,
+        "score": 61.0,
+        "band": "watch"
+      },
+      {
+        "market_id": "2695686",
+        "question": "Will Alberto Núñez Feijóo be the next Prime Minister of Spain?",
+        "best_bid": 0.87,
+        "best_ask": 0.88,
+        "score": 61.0,
+        "band": "watch"
+      },
+      {
+        "market_id": "6367369",
+        "question": "Israel x Iran ceasefire continues through December 15?",
+        "best_bid": 0.79,
+        "best_ask": 0.8,
+        "score": 61.0,
+        "band": "watch"
+      },
+      {
+        "market_id": "6947944",
+        "question": "Russia x Ukraine energy ceasefire agreement by December 31, 2026?",
+        "best_bid": 0.3,
+        "best_ask": 0.31,
+        "score": 61.0,
+        "band": "watch"
+      },
+      {
+        "market_id": "3902370",
+        "question": "Israel x Iran ceasefire continues through November 30?",
+        "best_bid": 0.84,
+        "best_ask": 0.85,
+        "score": 61.0,
+        "band": "watch"
+      },
+      {
+        "market_id": "676739",
+        "question": "Will NVIDIA be the largest company in the world by market cap on December 31?",
+        "best_bid": 0.13,
+        "best_ask": 0.14,
+        "score": 61.0,
+        "band": "watch"
+      },
+      {
+        "market_id": "676741",
+        "question": "Will Apple be the largest company in the world by market cap on December 31?",
+        "best_bid": 0.852,
+        "best_ask": 0.865,
+        "score": 61.0,
+        "band": "watch"
+      },
+      {
+        "market_id": "2750302",
+        "question": "Will Benjamin Netanyahu be the next leader out before 2027?",
+        "best_bid": 0.36,
+        "best_ask": 0.38,
+        "score": 61.0,
+        "band": "watch"
+      },
+      {
+        "market_id": "3399468",
+        "question": "Israel x Iran ceasefire continues through December 31?",
+        "best_bid": 0.69,
+        "best_ask": 0.7,
+        "score": 61.0,
+        "band": "watch"
+      },
+      {
+        "market_id": "5190565",
+        "question": "Next US-Iran senior diplomatic meeting by November 30, 2026?",
+        "best_bid": 0.16,
+        "best_ask": 0.17,
+        "score": 61.0,
+        "band": "watch"
+      },
+      {
+        "market_id": "690615",
+        "question": "Will Extended launch a token by December 31 2026?",
+        "best_bid": 0.961,
+        "best_ask": 0.973,
+        "score": 61.0,
+        "band": "watch"
+      },
+      {
+        "market_id": "4867865",
+        "question": "Will no qualifying US-Iran senior diplomatic meeting take place by December 31, 2026?",
+        "best_bid": 0.58,
+        "best_ask": 0.6,
+        "score": 61.0,
+        "band": "watch"
+      },
+      {
+        "market_id": "6831495",
+        "question": "US x Iran Effective Ceasefire by November 22?",
+        "best_bid": 0.62,
+        "best_ask": 0.63,
+        "score": 61.0,
+        "band": "watch"
+      },
+      {
+        "market_id": "4664662",
+        "question": "Will Google have the best AI model at the end of November 2026?",
+        "best_bid": 0.79,
+        "best_ask": 0.8,
+        "score": 61.0,
+        "band": "watch"
+      },
+      {
+        "market_id": "6072056",
+        "question": "Will Anthropic's valuation hit (HIGH) $2.25T by December 31?",
+        "best_bid": 0.13,
+        "best_ask": 0.14,
+        "score": 61.0,
+        "band": "watch"
+      },
+      {
+        "market_id": "6367372",
+        "question": "Israel x Iran ceasefire continues through November 22?",
+        "best_bid": 0.91,
+        "best_ask": 0.92,
+        "score": 61.0,
+        "band": "watch"
+      },
+      {
+        "market_id": "2299952",
+        "question": "Will Anthropic's valuation hit (HIGH) $3.0T by December 31?",
+        "best_bid": 0.06,
+        "best_ask": 0.07,
+        "score": 61.0,
+        "band": "watch"
+      },
+      {
+        "market_id": "6908168",
+        "question": "Jensen Huang announced resignation or removal by March 31, 2027?",
+        "best_bid": 0.86,
+        "best_ask": 0.87,
+        "score": 59.0,
+        "band": "watch"
+      },
+      {
+        "market_id": "3215013",
+        "question": "Will the Fed increase interest rates by 25 bps after the January 2027 meeting?",
+        "best_bid": 0.53,
+        "best_ask": 0.54,
+        "score": 59.0,
+        "band": "watch"
+      },
+      {
+        "market_id": "3215012",
+        "question": "Will there be no change in Fed interest rates after the January 2027 meeting?",
+        "best_bid": 0.45,
+        "best_ask": 0.46,
+        "score": 59.0,
+        "band": "watch"
+      }
+    ]
+  },
+  "positions": [
+    {
+      "market_id": "1005345",
+      "outcome": null,
+      "shares": 11.3,
+      "mid_usd": 0.998,
+      "value_usd": 11.2774,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "4397025",
+      "outcome": null,
+      "shares": 10.0,
+      "mid_usd": 0.993,
+      "value_usd": 9.93,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "2724048",
+      "outcome": null,
+      "shares": 10.0,
+      "mid_usd": 0.9685,
+      "value_usd": 9.685,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "1005343",
+      "outcome": null,
+      "shares": 10.0,
+      "mid_usd": 0.93,
+      "value_usd": 9.3,
+      "valued_by": "cost"
+    },
+    {
+      "market_id": "5087226",
+      "outcome": null,
+      "shares": 10.0,
+      "mid_usd": 0.895,
+      "value_usd": 8.95,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "1005344",
+      "outcome": null,
+      "shares": 10.0,
+      "mid_usd": 0.85,
+      "value_usd": 8.5,
+      "valued_by": "cost"
+    },
+    {
+      "market_id": "5190565",
+      "outcome": "No",
+      "shares": 10.0,
+      "mid_usd": 0.835,
+      "value_usd": 8.35,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "4599796",
+      "outcome": null,
+      "shares": 10.0,
+      "mid_usd": 0.765,
+      "value_usd": 7.65,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "3399468",
+      "outcome": "Yes",
+      "shares": 10.0,
+      "mid_usd": 0.695,
+      "value_usd": 6.95,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "6299698",
+      "outcome": null,
+      "shares": 7.44,
+      "mid_usd": 0.915,
+      "value_usd": 6.8076,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "4397022",
+      "outcome": null,
+      "shares": 10.0,
+      "mid_usd": 0.375,
+      "value_usd": 3.75,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "2412744",
+      "outcome": null,
+      "shares": 18.0,
+      "mid_usd": 0.2025,
+      "value_usd": 3.645,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "3580933",
+      "outcome": null,
+      "shares": 10.0,
+      "mid_usd": 0.3515,
+      "value_usd": 3.515,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "3580932",
+      "outcome": "No",
+      "shares": 10.0,
+      "mid_usd": 0.345,
+      "value_usd": 3.45,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "678414",
+      "outcome": null,
+      "shares": 20.0,
+      "mid_usd": 0.125,
+      "value_usd": 2.5,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "6367369",
+      "outcome": "Yes",
+      "shares": 2.855,
+      "mid_usd": 0.795,
+      "value_usd": 2.269725,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "6281141",
+      "outcome": null,
+      "shares": 20.0,
+      "mid_usd": 0.105,
+      "value_usd": 2.1,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "6367369",
+      "outcome": "No",
+      "shares": 10.0,
+      "mid_usd": 0.205,
+      "value_usd": 2.05,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "3902370",
+      "outcome": "No",
+      "shares": 12.5,
+      "mid_usd": 0.16,
+      "value_usd": 2.0,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "6367372",
+      "outcome": "No",
+      "shares": 19.895,
+      "mid_usd": 0.085,
+      "value_usd": 1.691075,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "666659",
+      "outcome": null,
+      "shares": 10.0,
+      "mid_usd": 0.135,
+      "value_usd": 1.35,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "1321561",
+      "outcome": null,
+      "shares": 10.0,
+      "mid_usd": 0.0795,
+      "value_usd": 0.795,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "5714365",
+      "outcome": null,
+      "shares": 10.0,
+      "mid_usd": 0.072,
+      "value_usd": 0.72,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "2412747",
+      "outcome": null,
+      "shares": 5.0,
+      "mid_usd": 0.124,
+      "value_usd": 0.62,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "666661",
+      "outcome": null,
+      "shares": 10.0,
+      "mid_usd": 0.056,
+      "value_usd": 0.56,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "5163128",
+      "outcome": null,
+      "shares": 10.0,
+      "mid_usd": 0.0525,
+      "value_usd": 0.525,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "5211896",
+      "outcome": null,
+      "shares": 10.0,
+      "mid_usd": 0.051,
+      "value_usd": 0.51,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "690615",
+      "outcome": "No",
+      "shares": 10.0,
+      "mid_usd": 0.033,
+      "value_usd": 0.33,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "4170753",
+      "outcome": null,
+      "shares": 10.0,
+      "mid_usd": 0.0265,
+      "value_usd": 0.265,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "2413330",
+      "outcome": null,
+      "shares": 10.0,
+      "mid_usd": 0.0225,
+      "value_usd": 0.225,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "6299698",
+      "outcome": null,
+      "shares": 2.56,
+      "mid_usd": 0.085,
+      "value_usd": 0.2176,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "5339986",
+      "outcome": null,
+      "shares": 3.885,
+      "mid_usd": 0.0305,
+      "value_usd": 0.118492,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "1005345",
+      "outcome": null,
+      "shares": 5.0,
+      "mid_usd": 0.002,
+      "value_usd": 0.01,
+      "valued_by": "mid"
+    }
+  ],
+  "notes": "Paper simulation only, no real funds. Collateral is pUSD (console log still labels it USDC). Round resets on restart. Snapshot is regenerated hourly; only the latest file is kept."
+}
