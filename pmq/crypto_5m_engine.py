@@ -223,6 +223,51 @@ class Crypto5mEngine:
             self._rounds_path = os.path.join(DATA_DIR, "crypto_5m_paper_rounds.jsonl")
             self._summary_path = os.path.join(DATA_DIR, "crypto_5m_paper_summary.json")
             self._live_state_path = os.path.join(DATA_DIR, "crypto_5m_live_state.json")
+            self._load_persisted_state()
+
+    def _load_persisted_state(self):
+        """重启时无缝承接历史全量账本数据，确保升级与重启零数据丢失"""
+        try:
+            if os.path.exists(self._rounds_path):
+                total_pnl = 0.0
+                tot_rounds = 0
+                win_rounds = 0
+                with open(self._rounds_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            try:
+                                r = json.loads(line)
+                                pnl = float(r.get("realized_pnl_usd", 0.0))
+                                total_pnl += pnl
+                                tot_rounds += 1
+                                if pnl > 0:
+                                    win_rounds += 1
+                            except Exception:
+                                pass
+                if tot_rounds > 0:
+                    self.total_settled_pnl = round(total_pnl, 4)
+                    self.total_rounds = tot_rounds
+                    self.winning_rounds = win_rounds
+                    self.paper_cash_usd = round(self.initial_paper_capital + self.total_settled_pnl, 4)
+                    self.peak_equity = max(self.peak_equity, self.paper_cash_usd)
+
+            if os.path.exists(self._trades_path):
+                cnt = 0
+                with open(self._trades_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        if line.strip():
+                            cnt += 1
+                self.total_fills = cnt
+
+            if self.total_rounds > 0:
+                logger.info(
+                    f"📚 [历史账本完美承接] 成功恢复历史 {self.total_rounds} 轮做市记录 | "
+                    f"累计净利润: +${self.total_settled_pnl:.4f}U | 胜率: {self.winning_rounds}/{self.total_rounds} | "
+                    f"总成交: {self.total_fills} 笔 | 当前累计总权益: ${self.paper_cash_usd:.2f}"
+                )
+        except Exception as e:
+            logger.warning(f"承接历史账本异常: {e}")
 
     def _push_log(self, msg: str):
         ts_str = datetime.now().strftime("%H:%M:%S")
