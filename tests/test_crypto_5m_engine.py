@@ -1,3 +1,4 @@
+import time
 import pytest
 from pmq.crypto_5m_engine import Crypto5mEngine, MarketInventory, is_kill_switch_active
 
@@ -198,3 +199,44 @@ def test_queue_position_penalty_in_shadow_match():
     # 同价挂单且深度足够 (ask=0.40, size=30.0 >= 18.0) -> 按 50% 保守成交 5.0 份
     eng.simulate_shadow_fills(inv, asks_up=[(0.40, 30.0)], asks_dn=[])
     assert inv.up_shares == pytest.approx(5.0, abs=0.1)
+
+
+def test_settlement_30s_lock_and_release():
+    from pmq.crypto_5m_engine import Crypto5mEngine
+    engine = Crypto5mEngine(coins=['btc'], initial_paper_capital=30.0, persist_ledger=False)
+    assert engine.paper_cash_usd == 30.0
+    assert len(engine.pending_settlements) == 0
+
+    engine.pending_settlements.append((time.time() + 0.1, 5.0, "btc-test"))
+    engine._release_settled_funds()
+    assert engine.paper_cash_usd == 30.0
+    assert len(engine.pending_settlements) == 1
+
+    time.sleep(0.15)
+    engine._release_settled_funds()
+    assert engine.paper_cash_usd == 35.0
+    assert len(engine.pending_settlements) == 0
+
+
+def test_hedge_slippage_penalty():
+    from pmq.crypto_5m_engine import Crypto5mEngine, MarketInventory, GridOrder
+    engine = Crypto5mEngine(coins=['btc'], initial_paper_capital=30.0, persist_ledger=False)
+    inv = MarketInventory(slug='btc-test', coin='btc', base_ts=1700000000, strike_k=68000.0, token_up='up', token_down='dn')
+
+    od_norm = GridOrder(side='UP', price=0.40, shares=2.0, cost_usd=0.80, tag='discount')
+    inv.open_orders = [od_norm]
+    asks_up = [(0.38, 10.0)]
+    engine.simulate_shadow_fills(inv, asks_up, [])
+    # 2.0 shares * 85% strictly better fill ratio = 1.7 shares
+    assert inv.up_shares == 1.7
+    assert inv.up_cost == round(1.7 * 0.38, 4)
+
+    inv2 = MarketInventory(slug='btc-test2', coin='btc', base_ts=1700000000, strike_k=68000.0, token_up='up', token_down='dn')
+    od_hedge = GridOrder(side='DOWN', price=0.55, shares=2.0, cost_usd=1.10, tag='hedge')
+    inv2.open_orders = [od_hedge]
+    asks_dn = [(0.50, 10.0)]
+    engine.simulate_shadow_fills(inv2, [], asks_dn)
+    # 2.0 shares * 85% strictly better fill ratio = 1.7 shares
+    assert inv2.down_shares == 1.7
+    # base_exec_p is 0.50 + 0.015 penalty = 0.515
+    assert inv2.down_cost == round(1.7 * 0.515, 4)

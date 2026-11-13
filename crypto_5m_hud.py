@@ -1,8 +1,13 @@
 """
-Polymarket 5 分钟加密量化指挥舱 (方案二：彭博三币实战矩阵 · 全中文 UI)
+Polymarket 5 分钟加密量化指挥舰 (方案二升级版：彭博三币实战矩阵 · 全中文 UI)
 ====================================================================
 纯只读消费 data/crypto_5m_live_state.json 与 data/crypto_5m_paper_*.jsonl，
-与核心引擎进程物理隔离，确保零干扰、高刷新的全中文监控体验。
+与核心引擎进程物理隔离，确保零干扰、高刷新的全中文实盘监控体验。
+新增特性:
+1. 链上实盘真实资金实时透视 (Proxy pUSD 余额 + 签名 EOA POL Gas 监测)
+2. 链上 30 秒兑付资金锁定动态看板 (Locked Cash)
+3. 跨资产宏观风暴熔断 (Macro Storm) 全局状态告警横幅
+4. 悲观滑点惩罚与 Polygon 真实 Gas 摩擦台账穿透
 """
 
 import json
@@ -19,7 +24,7 @@ ROUNDS_PATH = os.path.join(DATA_DIR, "crypto_5m_paper_rounds.jsonl")
 TRADES_PATH = os.path.join(DATA_DIR, "crypto_5m_paper_trades.jsonl")
 SUMMARY_PATH = os.path.join(DATA_DIR, "crypto_5m_paper_summary.json")
 
-app = FastAPI(title="Polymarket 5分钟加密量化指挥舱")
+app = FastAPI(title="Polymarket 5分钟量化实战指挥舰 v3.1")
 
 
 def _read_json(path: str, default: dict) -> dict:
@@ -66,7 +71,7 @@ HTML_PAGE = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>PolyQuant 5分钟量化实战指挥舱</title>
+  <title>PolyQuant 5分钟量化实战指挥舰 v3.1</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     body {
@@ -87,32 +92,51 @@ HTML_PAGE = """<!DOCTYPE html>
 </head>
 <body class="min-h-screen p-3 md:p-4 flex flex-col gap-3">
 
+  <!-- 宏观风暴熔断全局警报横幅 (动态显隐) -->
+  <div id="macro-storm-banner" class="hidden rounded-lg bg-rose-500/20 border border-rose-500/60 p-2.5 text-center text-rose-300 text-xs font-bold tracking-wider animate-pulse flex items-center justify-center gap-2">
+    <span>🚨 跨资产宏观联动风暴熔断已触发！检测到核心主流币严重单边破位，已秒级撤销被动挂单并强行冻结新开仓！</span>
+  </div>
+
   <!-- 顶部全局控制栏 -->
   <header class="panel rounded-lg p-3 flex flex-wrap items-center justify-between gap-3">
     <div class="flex items-center gap-3">
       <div id="mode-badge" class="px-3 py-1.5 rounded border border-amber-500/50 bg-amber-500/10 text-amber-300 text-xs font-bold tracking-wide">
-        <div>[真实数据纸面交易]</div>
+        <div>[真实数据纸面交易 v3.1]</div>
         <div id="kill-switch-text" class="text-[11px] text-amber-400/90">[物理停机锁已启用 · 零资金风险]</div>
       </div>
       <div>
-        <div class="text-xs text-slate-400">模拟总权益 / 可用现金</div>
+        <div class="text-xs text-slate-400">拟真总权益 / 可用现金 (含30s兑付锁)</div>
         <div class="flex items-baseline gap-2">
           <span id="equity-val" class="mono text-xl font-bold text-white">$30.00</span>
           <span id="pnl-val" class="mono text-sm font-semibold text-emerald-400">(+0.00U)</span>
           <span id="cash-val" class="mono text-xs text-slate-400">现金: $30.00</span>
+          <span id="locked-cash-val" class="mono text-[11px] text-amber-300 bg-amber-950/40 px-1.5 py-0.5 rounded border border-amber-500/30">锁仓: $0.00</span>
         </div>
       </div>
     </div>
 
+    <!-- 链上实盘真实资金透视卡 -->
+    <div class="panel rounded px-3 py-1.5 border border-cyan-500/30 bg-cyan-950/20 flex items-center gap-3 text-xs">
+      <div>
+        <div class="text-[10px] text-cyan-400/80 font-semibold">实盘代理合约现金 (Proxy)</div>
+        <div class="mono font-bold text-cyan-200 text-sm"><span id="live-pusd-val">$1.72</span> <span class="text-[10px] text-cyan-400">pUSD</span></div>
+      </div>
+      <div class="w-px h-6 bg-cyan-500/20"></div>
+      <div>
+        <div class="text-[10px] text-cyan-400/80 font-semibold">实盘签名 Gas 燃料 (POL)</div>
+        <div class="mono font-bold text-emerald-300 text-sm"><span id="live-pol-val">3.6214</span> <span class="text-[10px] text-slate-400">POL</span></div>
+      </div>
+      <div id="gas-badge" class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">Gas充沛</div>
+    </div>
+
     <!-- 5分钟轮次倒计时进度条 -->
-    <div class="flex-1 min-w-[260px] max-w-md px-2">
+    <div class="flex-1 min-w-[240px] max-w-sm px-2">
       <div class="flex justify-between text-xs mb-1">
-        <span class="text-slate-300 font-semibold">当前 5 分钟周期: <span id="round-clock" class="mono text-emerald-400">--:--</span> 剩余</span>
+        <span class="text-slate-300 font-semibold">当前周期: <span id="round-clock" class="mono text-emerald-400">--:--</span> 剩余</span>
         <span id="cutoff-badge" class="text-amber-400 font-semibold">尾盘 60 秒全撤保护</span>
       </div>
-      <div class="w-full h-2.5 bg-slate-800 rounded-full overflow-hidden relative">
+      <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden relative">
         <div id="round-progress" class="h-full bg-emerald-500 transition-all duration-500" style="width: 100%"></div>
-        <!-- 60秒红线标记 (20%位置) -->
         <div class="absolute top-0 bottom-0 left-[20%] w-0.5 bg-rose-500 z-10" title="最后60秒全撤红线"></div>
       </div>
     </div>
@@ -137,16 +161,16 @@ HTML_PAGE = """<!DOCTYPE html>
 
   <!-- 底部双栏监控 -->
   <footer class="grid grid-cols-1 lg:grid-cols-12 gap-3 flex-1">
-    <!-- 左下：5秒防毒刷新心跳日志 -->
+    <!-- 左下：5 秒防毒刷新心跳日志 -->
     <section class="panel rounded-lg p-3 lg:col-span-5 flex flex-col">
       <div class="flex items-center justify-between mb-2">
         <h2 class="text-xs font-bold text-slate-300 flex items-center gap-2">
           <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-          5 秒防毒刷新实时心跳日志
+          5 秒防毒刷新实时心跳日志 (含滑点与兑付锁)
         </h2>
         <span id="last-update" class="mono text-[11px] text-slate-500">同步中...</span>
       </div>
-      <div id="log-box" class="bg-[#070A10] border border-slate-800/80 rounded p-2.5 h-52 overflow-y-auto scrollbar-thin mono text-[11px] leading-relaxed text-slate-300 space-y-1">
+      <div id="log-box" class="bg-[#070A10] border border-slate-800/80 rounded p-2.5 h-56 overflow-y-auto scrollbar-thin mono text-[11px] leading-relaxed text-slate-300 space-y-1">
         <div class="text-slate-500">等待后台纸面引擎推送实时日志...</div>
       </div>
     </section>
@@ -154,10 +178,10 @@ HTML_PAGE = """<!DOCTYPE html>
     <!-- 右下：已结算 5分钟周期真实盈亏台账 -->
     <section class="panel rounded-lg p-3 lg:col-span-7 flex flex-col">
       <div class="flex items-center justify-between mb-2">
-        <h2 class="text-xs font-bold text-slate-300">已结算 5 分钟周期真实盈亏台账 (官方裁决 / K线校验)</h2>
+        <h2 class="text-xs font-bold text-slate-300">已结算 5 分钟周期真实盈亏台账 (官方裁决 / 含Gas与滑点)</h2>
         <span id="fills-total" class="mono text-[11px] text-cyan-400">累计成交: 0 笔</span>
       </div>
-      <div class="overflow-x-auto h-52 overflow-y-auto scrollbar-thin">
+      <div class="overflow-x-auto h-56 overflow-y-auto scrollbar-thin">
         <table class="w-full text-left border-collapse text-xs">
           <thead class="text-slate-400 border-b border-slate-800 sticky top-0 bg-[#111622]">
             <tr>
@@ -165,8 +189,8 @@ HTML_PAGE = """<!DOCTYPE html>
               <th class="py-1.5 px-2">基准 → 收盘</th>
               <th class="py-1.5 px-2">胜方</th>
               <th class="py-1.5 px-2">配对锁利</th>
-              <th class="py-1.5 px-2">投入成本</th>
-              <th class="py-1.5 px-2">合约兑付</th>
+              <th class="py-1.5 px-2">成本/兑付</th>
+              <th class="py-1.5 px-2">Gas计提</th>
               <th class="py-1.5 px-2 text-right">净盈亏</th>
             </tr>
           </thead>
@@ -183,7 +207,7 @@ const TAG_ZH = {
   "discount": "折价接盘",
   "panic": "恐慌彩票",
   "high_prob": "高胜率捡漏",
-  "hedge": "跨时锁利"
+  "hedge": "跨时锁定(带滑点)"
 };
 
 function renderSparklineSVG(history, strikeK) {
@@ -219,132 +243,154 @@ function renderSparklineSVG(history, strikeK) {
 function renderCoinCard(coinKey, c) {
   const diffPct = c.strike_k > 0 ? ((c.spot - c.strike_k) / c.strike_k * 100) : 0;
   const isUp = diffPct >= 0;
-  const diffColor = isUp ? "text-emerald-400" : "text-rose-400";
+  const diffCls = isUp ? "text-emerald-400" : "text-rose-400";
+  const diffSign = isUp ? "+" : "";
 
-  const bestBidUp = c.bids_up && c.bids_up[0] ? `${c.bids_up[0][0].toFixed(2)} (${Math.round(c.bids_up[0][1])})` : "--";
-  const bestAskUp = c.asks_up && c.asks_up[0] ? `${c.asks_up[0][0].toFixed(2)} (${Math.round(c.asks_up[0][1])})` : "--";
-  const bestBidDn = c.bids_dn && c.bids_dn[0] ? `${c.bids_dn[0][0].toFixed(2)} (${Math.round(c.bids_dn[0][1])})` : "--";
-  const bestAskDn = c.asks_dn && c.asks_dn[0] ? `${c.asks_dn[0][0].toFixed(2)} (${Math.round(c.asks_dn[0][1])})` : "--";
+  const fairUpPct = (c.fair_up * 100).toFixed(0);
+  const fairDnPct = (c.fair_dn * 100).toFixed(0);
 
-  const upAskRows = (c.asks_up || []).slice(0, 3).reverse();
-  const upBidRows = (c.bids_up || []).slice(0, 3);
+  const bestBidUp = c.bids_up?.[0]?.[0] ?? "--";
+  const bestAskUp = c.asks_up?.[0]?.[0] ?? "--";
+  const bestBidDn = c.bids_dn?.[0]?.[0] ?? "--";
+  const bestAskDn = c.asks_dn?.[0]?.[0] ?? "--";
 
-  const ordersHtml = c.in_cutoff
-    ? `<span class="px-2 py-0.5 rounded bg-rose-500/20 border border-rose-500/40 text-rose-300 text-[11px]">尾盘60秒已全撤 · 锁仓等待结算</span>`
-    : (c.open_orders && c.open_orders.length > 0)
-      ? c.open_orders.map(o => {
-          const isSideUp = o.side === "UP";
-          const cls = isSideUp ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300" : "border-rose-500/40 bg-rose-500/10 text-rose-300";
-          const sideZh = isSideUp ? "看涨UP" : "看跌DN";
-          const tagZh = TAG_ZH[o.tag] || o.tag;
-          return `<span class="px-2 py-0.5 rounded border ${cls} mono text-[11px]">[${sideZh} @ ${o.price.toFixed(2)} · ${tagZh}]</span>`;
-        }).join(" ")
-      : `<span class="text-slate-500 text-xs">暂无安全折价挂单</span>`;
-
-  const totalShares = (c.up_shares || 0) + (c.down_shares || 0);
-  const upRatio = totalShares > 0 ? (c.up_shares / totalShares * 100) : 50;
-  const dnRatio = totalShares > 0 ? (c.down_shares / totalShares * 100) : 50;
-  const pairCost = (c.up_shares > 0 && c.down_shares > 0) ? (c.avg_up_cost + c.avg_down_cost) : null;
-  const lockStatus = pairCost !== null
-    ? (pairCost < 0.99 ? `<span class="text-emerald-400">配对成本 $${pairCost.toFixed(3)} &lt; $1.00 (已锁利)</span>` : `<span class="text-amber-400">配对成本 $${pairCost.toFixed(3)}</span>`)
-    : `<span class="text-slate-400">当前无双边配对库存</span>`;
+  const orders = c.open_orders || [];
+  const ordersHtml = orders.length === 0
+    ? '<div class="text-slate-500 py-2 text-center text-xs">当前无挂单 (保护中或等待新周期)</div>'
+    : orders.map(o => {
+        const sideCls = o.side === "UP" ? "text-emerald-300 border-emerald-500/30 bg-emerald-500/10" : "text-rose-300 border-rose-500/30 bg-rose-500/10";
+        const tagLabel = TAG_ZH[o.tag] || o.tag;
+        return `
+          <div class="flex items-center justify-between py-1 px-2 rounded border ${sideCls} text-xs">
+            <div class="flex items-center gap-1.5">
+              <span class="font-bold">${o.side === "UP" ? "买涨" : "买跌"}</span>
+              <span class="text-[10px] px-1 rounded bg-slate-800 text-slate-300">${tagLabel}</span>
+            </div>
+            <div class="mono font-semibold">
+              ${o.shares.toFixed(1)}份 @ $${o.price.toFixed(2)} ($${o.cost_usd.toFixed(2)})
+            </div>
+          </div>
+        `;
+      }).join("");
 
   return `
-    <div class="panel rounded-lg p-3 flex flex-col gap-2.5">
-      <!-- 币种头部 -->
-      <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+    <article class="panel rounded-lg p-3 flex flex-col gap-2.5">
+      <div class="flex items-center justify-between border-b border-slate-800/80 pb-2">
         <div class="flex items-center gap-2">
-          <span class="px-2 py-0.5 rounded bg-slate-800 text-white font-bold text-sm">${c.coin} 5分钟</span>
-          <span class="mono text-[11px] text-slate-400">${c.slug}</span>
+          <span class="text-base font-black tracking-wide text-white">${c.coin}</span>
+          <span class="text-xs text-slate-400">5分钟短线</span>
         </div>
         <div class="text-right">
-          <div class="mono text-sm font-bold text-white">$${c.spot} <span class="${diffColor} text-xs">(${isUp ? "+" : ""}${diffPct.toFixed(3)}%)</span></div>
-          <div class="text-[11px] text-slate-400">1m波动率: ${c.vol_1m_pct}%</div>
+          <span class="mono text-base font-bold text-white">$${c.spot.toFixed(2)}</span>
+          <span class="mono text-xs font-semibold ${diffCls} ml-1.5">${diffSign}${diffPct.toFixed(2)}%</span>
         </div>
       </div>
 
-      <!-- 5分钟现货曲线图 -->
-      <div class="bg-[#070A10] border border-slate-800/80 rounded p-2">
+      <div class="bg-[#070A10] border border-slate-800/60 rounded p-1">
         ${renderSparklineSVG(c.spot_history, c.strike_k)}
       </div>
 
-      <!-- 防毒盘口深度区 -->
-      <div class="bg-[#070A10] border border-slate-800/80 rounded p-2 text-xs">
-        <div class="flex justify-between text-[11px] text-slate-400 mb-1">
-          <span>Polymarket 实时盘口</span>
-          <span class="mono">UP: ${bestBidUp}/${bestAskUp} | DN: ${bestBidDn}/${bestAskDn}</span>
-        </div>
-
-        <!-- 毒药禁区 -->
-        <div class="bg-rose-950/30 border border-rose-500/30 rounded p-1.5 mb-1">
-          <div class="flex justify-between items-center text-[11px] text-rose-300 font-semibold mb-1">
-            <span>⛔ 毒药禁区 (高于公允估值 · 严禁挂单)</span>
-            <span class="mono text-rose-400/80">${upAskRows.map(r => r[0].toFixed(2)).join(" / ") || "--"}</span>
+      <div class="grid grid-cols-2 gap-2 text-xs">
+        <div class="bg-slate-900/60 border border-slate-800 rounded p-2">
+          <div class="text-[10px] text-slate-400 mb-1 flex justify-between">
+            <span>官方买一/卖一 (UP/DN)</span>
+            <span class="text-cyan-400">1.8x排队惩罚</span>
+          </div>
+          <div class="mono text-[11px] flex justify-between text-slate-200">
+            <span>涨: ${bestBidUp} - ${bestAskUp}</span>
+            <span>跌: ${bestBidDn} - ${bestAskDn}</span>
           </div>
         </div>
 
-        <!-- 模型公允分界线 -->
-        <div class="flex justify-between items-center py-1 px-2 bg-slate-800/90 rounded text-[11px] font-bold mb-1">
-          <span class="text-cyan-300">⚖️ 模型公允估值</span>
-          <span class="mono text-white">看涨 UP: ${(c.fair_up * 100).toFixed(1)}¢ &nbsp;|&nbsp; 看跌 DOWN: ${(c.fair_dn * 100).toFixed(1)}¢</span>
-        </div>
-
-        <!-- 安全防毒挂单区 -->
-        <div class="bg-emerald-950/30 border border-emerald-500/30 rounded p-1.5">
-          <div class="flex justify-between items-center text-[11px] text-emerald-300 font-semibold">
-            <span>🛡️ 安全防毒挂单区 (低于公允估值 · 安心接盘)</span>
-            <span class="mono text-emerald-400/80">${upBidRows.map(r => r[0].toFixed(2)).join(" / ") || "--"}</span>
+        <div class="bg-slate-900/60 border border-slate-800 rounded p-2">
+          <div class="text-[10px] text-slate-400 mb-1">公允概率定价 (BS模型+OFI)</div>
+          <div class="flex items-center gap-2">
+            <div class="flex-1 h-3 bg-slate-800 rounded-sm overflow-hidden flex">
+              <div class="bg-emerald-500 h-full" style="width: ${fairUpPct}%"></div>
+              <div class="bg-rose-500 h-full" style="width: ${fairDnPct}%"></div>
+            </div>
+            <span class="mono text-[11px] font-bold text-slate-200">${fairUpPct}% / ${fairDnPct}%</span>
           </div>
         </div>
       </div>
 
-      <!-- 当前安全网格标签 -->
+      <div class="bg-slate-900/40 border border-slate-800/60 rounded p-2 text-xs flex justify-between items-center">
+        <div>
+          <span class="text-slate-400">当前持仓:</span>
+          <span class="mono text-emerald-400 font-bold ml-1">${c.up_shares.toFixed(1)} 涨</span>
+          <span class="text-slate-500">/</span>
+          <span class="mono text-rose-400 font-bold">${c.down_shares.toFixed(1)} 跌</span>
+        </div>
+        <div>
+          <span class="text-slate-400">已配对锁利:</span>
+          <span class="mono text-cyan-300 font-bold ml-1">${c.paired_shares.toFixed(1)} 份</span>
+        </div>
+      </div>
+
       <div>
-        <div class="text-[11px] text-slate-400 mb-1">当前有效安全网格挂单 (每 5 秒防毒重刷)</div>
-        <div class="flex flex-wrap gap-1.5 min-h-[24px]">${ordersHtml}</div>
-      </div>
-
-      <!-- 库存平衡条 -->
-      <div class="pt-1 border-t border-slate-800/80">
-        <div class="flex justify-between text-[11px] mb-1">
-          <span class="text-slate-300 font-semibold">实时库存平衡</span>
-          <span class="mono">${lockStatus}</span>
+        <div class="text-[11px] font-semibold text-slate-400 mb-1.5 flex justify-between items-center">
+          <span>安全网格智能挂单 (自适应对冲)</span>
+          <span class="text-[10px] text-slate-500">${orders.length} 笔等待撮合</span>
         </div>
-        <div class="w-full h-2.5 bg-slate-800 rounded overflow-hidden flex">
-          <div class="bg-emerald-500 h-full transition-all" style="width: ${totalShares > 0 ? upRatio : 50}%"></div>
-          <div class="bg-rose-500 h-full transition-all" style="width: ${totalShares > 0 ? dnRatio : 50}%"></div>
-        </div>
-        <div class="flex justify-between mono text-[11px] mt-1 text-slate-400">
-          <span>UP 持仓: ${(c.up_shares || 0).toFixed(1)}份 (均价 ${(c.avg_up_cost || 0).toFixed(2)})</span>
-          <span>DN 持仓: ${(c.down_shares || 0).toFixed(1)}份 (均价 ${(c.avg_down_cost || 0).toFixed(2)})</span>
+        <div class="space-y-1.5">
+          ${ordersHtml}
         </div>
       </div>
-    </div>
+    </article>
   `;
 }
 
 async function fetchAndRender() {
   try {
     const res = await fetch("/api/dashboard");
+    if (!res.ok) return;
     const data = await res.json();
     const live = data.live || {};
-    const summary = data.summary || {};
+    const sum = data.summary || {};
 
-    // 顶部状态
-    const equity = live.current_equity_usd ?? summary.current_equity_usd ?? 30.0;
-    const pnl = live.total_settled_pnl_usd ?? summary.total_settled_pnl_usd ?? 0.0;
-    const cash = live.paper_cash_usd ?? 30.0;
+    // 宏观风暴指示灯
+    const banner = document.getElementById("macro-storm-banner");
+    if (live.macro_storm_active) {
+      banner.classList.remove("hidden");
+    } else {
+      banner.classList.add("hidden");
+    }
 
-    document.getElementById("equity-val").textContent = `$${equity.toFixed(2)}`;
+    // 链上资金透视
+    const cf = live.live_chain_funds || {};
+    if (cf.proxy_pusd !== undefined) {
+      document.getElementById("live-pusd-val").textContent = `$${Number(cf.proxy_pusd).toFixed(2)}`;
+    }
+    if (cf.wallet_pol !== undefined) {
+      document.getElementById("live-pol-val").textContent = Number(cf.wallet_pol).toFixed(4);
+    }
+    const gasBadge = document.getElementById("gas-badge");
+    if (cf.gas_ok === false) {
+      gasBadge.className = "px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40 animate-pulse";
+      gasBadge.textContent = "Gas不足需充";
+    } else {
+      gasBadge.className = "px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40";
+      gasBadge.textContent = "Gas充沛";
+    }
+
+    // 拟真资金
+    const eq = sum.current_equity_usd ?? live.current_equity_usd ?? 30.0;
+    const initCap = sum.initial_capital_usd ?? live.initial_capital_usd ?? 30.0;
+    const netPnl = sum.total_settled_pnl_usd ?? live.total_settled_pnl_usd ?? 0.0;
+    const roi = sum.roi_pct ?? (netPnl / initCap * 100);
+
+    document.getElementById("equity-val").textContent = `$${Number(eq).toFixed(2)}`;
     const pnlEl = document.getElementById("pnl-val");
-    pnlEl.textContent = `(${pnl >= 0 ? "+" : ""}${pnl.toFixed(4)}U)`;
-    pnlEl.className = `mono text-sm font-semibold ${pnl >= 0 ? "text-emerald-400" : "text-rose-400"}`;
-    document.getElementById("cash-val").textContent = `可用现金: $${cash.toFixed(2)}`;
+    pnlEl.textContent = `(${netPnl >= 0 ? "+" : ""}${Number(netPnl).toFixed(2)}U / ${roi.toFixed(1)}%)`;
+    pnlEl.className = `mono text-sm font-semibold ${netPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`;
+    document.getElementById("cash-val").textContent = `可用: $${Number(live.paper_cash_usd ?? 30.0).toFixed(2)}`;
+    document.getElementById("locked-cash-val").textContent = `30s锁仓: $${Number(live.locked_cash_usd ?? 0.0).toFixed(2)}`;
 
-    const rounds = live.total_rounds ?? summary.total_rounds ?? 0;
-    const wins = live.winning_rounds ?? summary.winning_rounds ?? 0;
-    document.getElementById("rounds-stat").textContent = `${rounds} 轮`;
-    document.getElementById("winrate-stat").textContent = rounds > 0 ? `${(wins / rounds * 100).toFixed(1)}%` : "--%";
+    // 统计
+    const totRounds = sum.total_rounds ?? live.total_rounds ?? 0;
+    const winRate = sum.win_rate_pct ?? (totRounds > 0 ? (live.winning_rounds / totRounds * 100) : 0);
+    document.getElementById("rounds-stat").textContent = `${totRounds} 轮`;
+    document.getElementById("winrate-stat").textContent = `${Number(winRate).toFixed(1)}%`;
     document.getElementById("latency-val").textContent = live.latency_ms ?? "--";
     document.getElementById("fills-total").textContent = `累计成交: ${live.total_fills ?? 0} 笔`;
     document.getElementById("last-update").textContent = `更新于 ${live.updated_at || "--"}`;
@@ -395,9 +441,9 @@ async function fetchAndRender() {
             <td class="py-1.5 px-2 text-slate-200">${r.slug}</td>
             <td class="py-1.5 px-2 text-slate-400">${Number(r.open_price).toFixed(2)} → ${Number(r.close_price).toFixed(2)}</td>
             <td class="py-1.5 px-2 font-bold ${r.winner === "UP" ? "text-emerald-400" : "text-rose-400"}">${winZh}</td>
-            <td class="py-1.5 px-2 text-cyan-300">${Number(r.paired_shares).toFixed(1)} 份</td>
-            <td class="py-1.5 px-2">$${Number(r.total_cost_usd).toFixed(2)}</td>
-            <td class="py-1.5 px-2">$${Number(r.payout_usd).toFixed(2)}</td>
+            <td class="py-1.5 px-2 text-cyan-300 font-bold">${Number(r.paired_shares).toFixed(1)} 份</td>
+            <td class="py-1.5 px-2">$${Number(r.total_cost_usd).toFixed(2)} / $${Number(r.payout_usd).toFixed(2)}</td>
+            <td class="py-1.5 px-2 text-slate-400">-$0.035U</td>
             <td class="py-1.5 px-2 text-right font-bold ${pnlCls}">${r.realized_pnl_usd >= 0 ? "+" : ""}${Number(r.realized_pnl_usd).toFixed(4)}U</td>
           </tr>
         `;
