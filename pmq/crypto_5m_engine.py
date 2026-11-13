@@ -448,7 +448,11 @@ class Crypto5mEngine:
             cur_side_cost = inv.up_cost if side == "UP" else inv.down_cost
             if cur_side_cost + cost > self.max_exposure_per_market_usd:
                 return
-            if cost > self.paper_cash_usd:
+
+            # 隐患消除 2: 对冲专属储备金硬隔离 (Hedge Reserve Enclave)
+            # 开仓试探单 (discount) 最多动用现金的 45%，剩余 55% 强制隔离保留为对冲专属流动性，杜绝资金死锁！
+            available_cash = self.paper_cash_usd if tag == "hedge" else (self.paper_cash_usd * 0.45)
+            if cost > available_cash:
                 return
 
             used_prices[side].add(p)
@@ -521,14 +525,24 @@ class Crypto5mEngine:
             if not asks:
                 return 0.0
             avail_shares = 0.0
+            strictly_better = False
             for ask_p, ask_sz in asks:
-                if ask_p <= od.price:
+                if ask_p < od.price:
+                    # 真实击穿 (对手盘直接低价抛售砸穿我们挂单): 队列优先，按 85% 比例真实撮合
                     avail_shares += ask_sz
+                    strictly_better = True
+                elif ask_p == od.price:
+                    # 隐患消除 1: 真实做市排队队列惩罚 (Queue Position Penalty)
+                    # 同价排队必须对手盘深度 >= 挂单量的 1.8 倍才算排到，且按 50% 保守吃单
+                    if ask_sz >= od.shares * 1.8:
+                        avail_shares += ask_sz * 0.50
+                    break
                 else:
                     break
             if avail_shares <= 0:
                 return 0.0
-            return round(min(od.shares, avail_shares), 2)
+            max_fill = min(od.shares, avail_shares)
+            return round(max_fill * (0.85 if strictly_better else 0.50), 2)
 
         remaining_orders: List[GridOrder] = []
         for od in inv.open_orders:
@@ -650,7 +664,10 @@ class Crypto5mEngine:
             if winner is None:
                 continue
 
-            payout = round(inv.up_shares * 1.0 if winner == "UP" else inv.down_shares * 1.0, 4)
+            gross_payout = round(inv.up_shares * 1.0 if winner == "UP" else inv.down_shares * 1.0, 4)
+            # 隐患消除 3: 链上真实赎回 Gas 摩擦计提 (Polygon Gas Friction: 0.035U/次有效赎回)
+            gas_friction = 0.035 if gross_payout > 0.05 else 0.0
+            payout = max(0.0, round(gross_payout - gas_friction, 4))
             total_cost = round(inv.up_cost + inv.down_cost, 4)
             pnl = round(payout - total_cost, 4)
 
@@ -745,6 +762,13 @@ class Crypto5mEngine:
 
         bids_up, asks_up = self.fetch_clob_book(inv.token_up)
         bids_dn, asks_dn = self.fetch_clob_book(inv.token_down)
+
+        # 隐患消除 4: 死人看门狗防静默断流 (Deadman Watchdog)
+        if (time.time() - spot_st.ts) > 6.0 or (not asks_up and not asks_dn):
+            if inv.open_orders:
+                inv.open_orders = []
+                logger.warning(f"🚨 [死人开关告警] {coin.upper()} 行情延迟超过6秒或盘口中断，紧急撤销挂单！")
+            return
 
         if inv.open_orders:
             self.simulate_shadow_fills(inv, asks_up, asks_dn)

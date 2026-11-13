@@ -153,3 +153,48 @@ def test_macro_storm_blocks_entries():
     # 当全市场发生单边暴跌风暴 (macro_storm_active=True) 时，即便处于中枢平衡区也禁止新开仓
     orders = eng.build_safe_grid(fair_up=0.50, fair_dn=0.50, inv=inv, rem_sec=200.0, macro_storm_active=True)
     assert orders == []
+
+
+def test_hedge_reserve_enclave_protects_cash():
+    # 模拟现金仅剩 $3.00，discount 试探单最多动用 45% = $1.35
+    eng = Crypto5mEngine(budget_per_order_usd=3.0, dry_run=True)
+    eng.paper_cash_usd = 3.00
+    inv = MarketInventory(
+        slug="btc-updown-5m-1000",
+        coin="btc",
+        base_ts=1000,
+        strike_k=70000.0,
+        token_up="t_up",
+        token_down="t_dn",
+    )
+    # 单笔预算 $1.95 > $1.35，开仓单被对冲储备金硬锁拦截
+    orders = eng.build_safe_grid(fair_up=0.50, fair_dn=0.50, inv=inv, rem_sec=200.0)
+    assert orders == []
+
+    # 但若当前持有未配对持仓需要对冲，对冲单被允许动用全部 $3.00 现金
+    inv.up_shares = 5.0
+    inv.up_cost = 2.0
+    hedge_orders = eng.build_safe_grid(fair_up=0.50, fair_dn=0.50, inv=inv, rem_sec=200.0)
+    assert len(hedge_orders) == 1
+    assert hedge_orders[0].tag == "hedge"
+
+
+def test_queue_position_penalty_in_shadow_match():
+    eng = Crypto5mEngine(budget_per_order_usd=3.0, dry_run=True)
+    inv = MarketInventory(
+        slug="btc-updown-5m-1000",
+        coin="btc",
+        base_ts=1000,
+        strike_k=70000.0,
+        token_up="t_up",
+        token_down="t_dn",
+    )
+    from pmq.crypto_5m_engine import GridOrder
+    inv.open_orders = [GridOrder(side="UP", price=0.40, shares=10.0, cost_usd=4.0, tag="discount")]
+    # 同价挂单 (ask=0.40)，但深度仅 12.0 < 10.0 * 1.8 = 18.0 -> 判定排队未轮到，成交为 0
+    eng.simulate_shadow_fills(inv, asks_up=[(0.40, 12.0)], asks_dn=[])
+    assert inv.up_shares == 0.0
+
+    # 同价挂单且深度足够 (ask=0.40, size=30.0 >= 18.0) -> 按 50% 保守成交 5.0 份
+    eng.simulate_shadow_fills(inv, asks_up=[(0.40, 30.0)], asks_dn=[])
+    assert inv.up_shares == pytest.approx(5.0, abs=0.1)
