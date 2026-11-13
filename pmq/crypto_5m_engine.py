@@ -913,36 +913,49 @@ class Crypto5mEngine:
         now = time.time()
         if (now - self._last_live_funds_ts) < 10.0 and self._last_live_funds:
             return self._last_live_funds
-        try:
-            rpc = "https://1rpc.io/matic"
-            proxy = os.getenv("FUNDER_ADDRESS", "0x735e49143B19989E8c2BE88EdE72e96c1d0500dc")
-            wallet = os.getenv("WALLET_ADDRESS", "0x514f13a326a93aeda4522b973707e8602c2bcefd")
-            pusd = "0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb"
 
-            data_pusd = "0x70a08231000000000000000000000000" + proxy[2:].lower()
-            res_pusd = self._http.post(rpc, json={"jsonrpc": "2.0", "id": 1, "method": "eth_call", "params": [{"to": pusd, "data": data_pusd}, "latest"]}, timeout=2.0).json()
-            val_pusd = int(res_pusd.get("result", "0x0"), 16) / 1e6
+        rpcs = [
+            "https://polygon-bor-rpc.publicnode.com",
+            "https://polygon.drpc.org",
+            "https://1rpc.io/matic",
+        ]
+        proxy = os.getenv("FUNDER_ADDRESS", "0x735e49143B19989E8c2BE88EdE72e96c1d0500dc")
+        wallet = os.getenv("WALLET_ADDRESS", "0x514f13a326a93aeda4522b973707e8602c2bcefd")
+        pusd = "0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb"
+        data_pusd = "0x70a08231000000000000000000000000" + proxy[2:].lower()
 
-            res_pol = self._http.post(rpc, json={"jsonrpc": "2.0", "id": 2, "method": "eth_getBalance", "params": [wallet, "latest"]}, timeout=2.0).json()
-            val_pol = int(res_pol.get("result", "0x0"), 16) / 1e18
+        for rpc in rpcs:
+            try:
+                res_pusd = self._http.post(rpc, json={"jsonrpc": "2.0", "id": 1, "method": "eth_call", "params": [{"to": pusd, "data": data_pusd}, "latest"]}, timeout=3.0).json()
+                if "result" not in res_pusd:
+                    continue
+                val_pusd = int(res_pusd["result"], 16) / 1e6
 
+                res_pol = self._http.post(rpc, json={"jsonrpc": "2.0", "id": 2, "method": "eth_getBalance", "params": [wallet, "latest"]}, timeout=3.0).json()
+                if "result" not in res_pol:
+                    continue
+                val_pol = int(res_pol["result"], 16) / 1e18
+
+                self._last_live_funds = {
+                    "proxy_pusd": round(val_pusd, 2),
+                    "wallet_pol": round(val_pol, 4),
+                    "wallet_addr": wallet,
+                    "proxy_addr": proxy,
+                    "gas_ok": val_pol >= 0.5,
+                }
+                self._last_live_funds_ts = now
+                return self._last_live_funds
+            except Exception:
+                continue
+
+        if not self._last_live_funds:
             self._last_live_funds = {
-                "proxy_pusd": round(val_pusd, 2),
-                "wallet_pol": round(val_pol, 4),
+                "proxy_pusd": 1.72,
+                "wallet_pol": 3.6214,
                 "wallet_addr": wallet,
                 "proxy_addr": proxy,
-                "gas_ok": val_pol >= 0.5,
+                "gas_ok": True,
             }
-            self._last_live_funds_ts = now
-        except Exception:
-            if not self._last_live_funds:
-                self._last_live_funds = {
-                    "proxy_pusd": 1.72,
-                    "wallet_pol": 3.6214,
-                    "wallet_addr": "0x514f...cefd",
-                    "proxy_addr": "0x735e...00dc",
-                    "gas_ok": True,
-                }
         return self._last_live_funds
 
     def step_once(self):

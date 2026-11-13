@@ -3,11 +3,12 @@ Polymarket 5 分钟加密量化指挥舰 (方案二升级版：彭博三币实�
 ====================================================================
 纯只读消费 data/crypto_5m_live_state.json 与 data/crypto_5m_paper_*.jsonl，
 与核心引擎进程物理隔离，确保零干扰、高刷新的全中文实盘监控体验。
-新增特性:
+特性:
 1. 链上实盘真实资金实时透视 (Proxy pUSD 余额 + 签名 EOA POL Gas 监测)
-2. 链上 30 秒兑付资金锁定动态看板 (Locked Cash)
-3. 跨资产宏观风暴熔断 (Macro Storm) 全局状态告警横幅
-4. 悲观滑点惩罚与 Polygon 真实 Gas 摩擦台账穿透
+2. 钱包与持仓直达链接 (点击直达 Polymarket Portfolio / 官方市场)
+3. 链上 30 秒兑付资金锁定动态看板 (Locked Cash)
+4. 跨资产宏观风暴熔断 (Macro Storm) 全局状态告警横幅
+5. 悲观滑点惩罚与 Polygon 真实 Gas 摩擦台账穿透
 """
 
 import json
@@ -115,10 +116,15 @@ HTML_PAGE = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- 链上实盘真实资金透视卡 -->
-    <div class="panel rounded px-3 py-1.5 border border-cyan-500/30 bg-cyan-950/20 flex items-center gap-3 text-xs">
+    <!-- 链上实盘真实资金透视卡 (支持点击直达 Polymarket 钱包) -->
+    <a href="https://polymarket.com/zh/portfolio" target="_blank" rel="noopener noreferrer" 
+       title="点击直达官方 Polymarket 钱包资产组合页面"
+       class="panel rounded px-3 py-1.5 border border-cyan-500/30 bg-cyan-950/20 hover:bg-cyan-900/30 hover:border-cyan-400/60 transition flex items-center gap-3 text-xs cursor-pointer group">
       <div>
-        <div class="text-[10px] text-cyan-400/80 font-semibold">实盘代理合约现金 (Proxy)</div>
+        <div class="text-[10px] text-cyan-400/80 font-semibold group-hover:text-cyan-300 flex items-center gap-1">
+          <span>实盘代理合约现金 (Proxy)</span>
+          <span class="text-[9px]">↗</span>
+        </div>
         <div class="mono font-bold text-cyan-200 text-sm"><span id="live-pusd-val">$1.72</span> <span class="text-[10px] text-cyan-400">pUSD</span></div>
       </div>
       <div class="w-px h-6 bg-cyan-500/20"></div>
@@ -127,7 +133,7 @@ HTML_PAGE = """<!DOCTYPE html>
         <div class="mono font-bold text-emerald-300 text-sm"><span id="live-pol-val">3.6214</span> <span class="text-[10px] text-slate-400">POL</span></div>
       </div>
       <div id="gas-badge" class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">Gas充沛</div>
-    </div>
+    </a>
 
     <!-- 5分钟轮次倒计时进度条 -->
     <div class="flex-1 min-w-[240px] max-w-sm px-2">
@@ -280,9 +286,16 @@ function renderCoinCard(coinKey, c) {
           <span class="text-base font-black tracking-wide text-white">${c.coin}</span>
           <span class="text-xs text-slate-400">5分钟短线</span>
         </div>
-        <div class="text-right">
-          <span class="mono text-base font-bold text-white">$${c.spot.toFixed(2)}</span>
-          <span class="mono text-xs font-semibold ${diffCls} ml-1.5">${diffSign}${diffPct.toFixed(2)}%</span>
+        <div class="text-right flex items-center gap-2">
+          <div>
+            <span class="mono text-base font-bold text-white">$${c.spot.toFixed(2)}</span>
+            <span class="mono text-xs font-semibold ${diffCls} ml-1.5">${diffSign}${diffPct.toFixed(2)}%</span>
+          </div>
+          <a href="https://polymarket.com/market/${c.slug}" target="_blank" rel="noopener noreferrer" 
+             title="点击在 Polymarket 官网查看该市场" 
+             class="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700">
+            官网盘口 ↗
+          </a>
         </div>
       </div>
 
@@ -314,9 +327,12 @@ function renderCoinCard(coinKey, c) {
         </div>
       </div>
 
-      <div class="bg-slate-900/40 border border-slate-800/60 rounded p-2 text-xs flex justify-between items-center">
+      <!-- 当前持仓栏 (支持点击直达 Polymarket Portfolio 官方持仓页面) -->
+      <a href="https://polymarket.com/zh/portfolio" target="_blank" rel="noopener noreferrer"
+         title="点击直达官方 Polymarket 持仓与资产组合页面"
+         class="bg-slate-900/40 hover:bg-slate-800/60 border border-slate-800/60 hover:border-cyan-500/40 rounded p-2 text-xs flex justify-between items-center transition cursor-pointer group">
         <div>
-          <span class="text-slate-400">当前持仓:</span>
+          <span class="text-slate-400 group-hover:text-cyan-300">当前持仓 ↗:</span>
           <span class="mono text-emerald-400 font-bold ml-1">${c.up_shares.toFixed(1)} 涨</span>
           <span class="text-slate-500">/</span>
           <span class="mono text-rose-400 font-bold">${c.down_shares.toFixed(1)} 跌</span>
@@ -325,7 +341,7 @@ function renderCoinCard(coinKey, c) {
           <span class="text-slate-400">已配对锁利:</span>
           <span class="mono text-cyan-300 font-bold ml-1">${c.paired_shares.toFixed(1)} 份</span>
         </div>
-      </div>
+      </a>
 
       <div>
         <div class="text-[11px] font-semibold text-slate-400 mb-1.5 flex justify-between items-center">
