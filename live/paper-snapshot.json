@@ -1,28 +1,28 @@
 {
   "schema_version": 1,
-  "updated_at_utc": "2026-11-13T12:00:01Z",
-  "updated_at_cst": "2026-11-13T20:00:01+08:00",
+  "updated_at_utc": "2026-11-13T13:00:05Z",
+  "updated_at_cst": "2026-11-13T21:00:05+08:00",
   "gate": "A",
   "mode": "paper",
   "seed_usd": 200.0,
   "halt_line_usd": 140.0,
-  "round": 139,
-  "nav_usd": 204.68835,
-  "nav_console_usd": 204.68835,
-  "nav_diff_usd": 0.0,
+  "round": 497,
+  "nav_usd": 204.271522,
+  "nav_console_usd": 204.286522,
+  "nav_diff_usd": -0.015,
   "cash_usd": 81.74214,
-  "positions_usd": 122.94621,
+  "positions_usd": 122.529382,
   "positions_tokens": 34,
   "positions_at_mid": 32,
   "positions_at_cost": 2,
   "day_start_usd": 202.086677,
-  "day_pnl_usd": 2.601673,
+  "day_pnl_usd": 2.184845,
   "peak_usd": 205.418022,
   "circuit": "NORMAL",
   "halted_reason": null,
   "fills_count": 102,
   "orders": {
-    "cancelled": 1023016,
+    "cancelled": 1025880,
     "filled": 90,
     "open": 8,
     "partially_filled_cancelled": 11
@@ -367,8 +367,8 @@
       "market_id": "2412744",
       "outcome": null,
       "shares": 18.0,
-      "mid_usd": 0.2175,
-      "value_usd": 3.915,
+      "mid_usd": 0.2205,
+      "value_usd": 3.969,
       "valued_by": "mid"
     },
     {
@@ -399,16 +399,16 @@
       "market_id": "6281141",
       "outcome": "Yes",
       "shares": 20.0,
-      "mid_usd": 0.17,
-      "value_usd": 3.4,
+      "mid_usd": 0.145,
+      "value_usd": 2.9,
       "valued_by": "mid"
     },
     {
       "market_id": "678414",
       "outcome": null,
       "shares": 20.0,
-      "mid_usd": 0.115,
-      "value_usd": 2.3,
+      "mid_usd": 0.12,
+      "value_usd": 2.4,
       "valued_by": "mid"
     },
     {
@@ -463,8 +463,8 @@
       "market_id": "2412747",
       "outcome": null,
       "shares": 5.0,
-      "mid_usd": 0.1135,
-      "value_usd": 0.5675,
+      "mid_usd": 0.1125,
+      "value_usd": 0.5625,
       "valued_by": "mid"
     },
     {
@@ -479,16 +479,8 @@
       "market_id": "5714365",
       "outcome": null,
       "shares": 10.0,
-      "mid_usd": 0.0515,
-      "value_usd": 0.515,
-      "valued_by": "mid"
-    },
-    {
-      "market_id": "3902370",
-      "outcome": "No",
-      "shares": 2.5,
-      "mid_usd": 0.195,
-      "value_usd": 0.4875,
+      "mid_usd": 0.0525,
+      "value_usd": 0.525,
       "valued_by": "mid"
     },
     {
@@ -500,35 +492,35 @@
       "valued_by": "mid"
     },
     {
+      "market_id": "3902370",
+      "outcome": "No",
+      "shares": 2.5,
+      "mid_usd": 0.185,
+      "value_usd": 0.4625,
+      "valued_by": "mid"
+    },
+    {
       "market_id": "5163128",
       "outcome": null,
       "shares": 10.0,
-      "mid_usd": 0.043,
-      "value_usd": 0.43,
+      "mid_usd": 0.0375,
+      "value_usd": 0.375,
       "valued_by": "mid"
     },
     {
       "market_id": "690615",
       "outcome": null,
       "shares": 10.0,
-      "mid_usd": 0.037,
-      "value_usd": 0.37,
+      "mid_usd": 0.0375,
+      "value_usd": 0.375,
       "valued_by": "mid"
     },
     {
       "market_id": "4170753",
       "outcome": null,
       "shares": 10.0,
-      "mid_usd": 0.025,
-      "value_usd": 0.25,
-      "valued_by": "mid"
-    },
-    {
-      "market_id": "2413330",
-      "outcome": null,
-      "shares": 10.0,
-      "mid_usd": 0.0215,
-      "value_usd": 0.215,
+      "mid_usd": 0.026,
+      "value_usd": 0.26,
       "valued_by": "mid"
     },
     {
@@ -540,11 +532,19 @@
       "valued_by": "mid"
     },
     {
+      "market_id": "2413330",
+      "outcome": null,
+      "shares": 10.0,
+      "mid_usd": 0.021,
+      "value_usd": 0.21,
+      "valued_by": "mid"
+    },
+    {
       "market_id": "5339986",
       "outcome": null,
       "shares": 3.885,
-      "mid_usd": 0.04,
-      "value_usd": 0.1554,
+      "mid_usd": 0.0385,
+      "value_usd": 0.149572,
       "valued_by": "mid"
     },
     {
