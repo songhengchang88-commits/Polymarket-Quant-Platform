@@ -258,7 +258,8 @@ class Crypto5mEngine:
                     self.total_settled_pnl = round(total_pnl, 4)
                     self.total_rounds = tot_rounds
                     self.winning_rounds = win_rounds
-                    self.paper_cash_usd = round(self.initial_paper_capital + self.total_settled_pnl, 4)
+                    # 严格执行最高指示: 纸面当前可用资金绑定当期 $30.00 周期本金，杜绝历史累积滚雪球蒙蔽实战数据！
+                    self.paper_cash_usd = round(self.cycle_initial_capital + self.cycle_settled_pnl, 4)
                     self.peak_equity = max(self.peak_equity, self.paper_cash_usd)
 
             if os.path.exists(self._trades_path):
@@ -525,8 +526,10 @@ class Crypto5mEngine:
 
         # 情况 A: 当前持有未配对 UP 敞口 -> 死锁 UP 开仓，挂 1:1 对冲 (时间衰减 + 现货漂移联合动态滑窗)
         if unpaired_up > 0.1:
-            is_drifting_against = (fair_up < 0.35)
-            if is_drifting_against and rem_sec > 60.0:
+            # 1. 优先判定严重单边暴跌 (fair_up < 0.22) 或尾盘 (rem_sec <= 45s): 立即放宽上限至 1.25，越早穿盘对冲滑点越小，绝不能坐等归零！
+            if fair_up < 0.22 or rem_sec <= 45.0:
+                target_cap = 1.25
+            elif fair_up < 0.35 and rem_sec > 60.0:
                 target_cap = 1.00   # 现货快速下杀破位，提前平价保本锁死对冲
             elif rem_sec > 150.0:
                 target_cap = 0.94   # 前期超额锁利 (保底留6¢净利垫)
@@ -535,8 +538,7 @@ class Crypto5mEngine:
             elif rem_sec > 60.0:
                 target_cap = 1.00   # 临近尾盘保本对冲 (平价锁死配对，零亏损)
             else:
-                # 尾盘 (rem_sec <= 60s) 或严重单边逆行 (fair_up < 0.22): 启动紧急穿盘对冲，上限放宽至 1.25，截断 100% 归零惨剧！
-                target_cap = 1.25 if (fair_up < 0.22 or is_drifting_against) else (1.12 if fair_up < 0.25 else 1.02)
+                target_cap = 1.15
 
             max_hedge_dn = min(0.96, target_cap - inv.avg_up_cost)
             if fair_up >= 0.25 and rem_sec > 45.0:
@@ -548,8 +550,10 @@ class Crypto5mEngine:
 
         # 情况 B: 当前持有未配对 DOWN 敞口 -> 死锁 DOWN 开仓，挂 1:1 对冲 (时间衰减 + 现货漂移联合动态滑窗)
         if unpaired_dn > 0.1:
-            is_drifting_against = (fair_dn < 0.35)
-            if is_drifting_against and rem_sec > 60.0:
+            # 1. 优先判定严重单边暴拉 (fair_dn < 0.22) 或尾盘 (rem_sec <= 45s): 立即放宽上限至 1.25，越早穿盘对冲滑点越小！
+            if fair_dn < 0.22 or rem_sec <= 45.0:
+                target_cap = 1.25
+            elif fair_dn < 0.35 and rem_sec > 60.0:
                 target_cap = 1.00   # 现货快速拉升破位，提前平价保本锁死对冲
             elif rem_sec > 150.0:
                 target_cap = 0.94   # 前期超额锁利 (保底留6¢净利垫)
@@ -558,8 +562,7 @@ class Crypto5mEngine:
             elif rem_sec > 60.0:
                 target_cap = 1.00   # 临近尾盘保本对冲 (平价锁死配对，零亏损)
             else:
-                # 尾盘 (rem_sec <= 60s) 或严重单边逆行 (fair_dn < 0.22): 启动紧急穿盘对冲，上限放宽至 1.25，截断 100% 归零惨剧！
-                target_cap = 1.25 if (fair_dn < 0.22 or is_drifting_against) else (1.12 if fair_dn < 0.25 else 1.02)
+                target_cap = 1.15
 
             max_hedge_up = min(0.96, target_cap - inv.avg_down_cost)
             if fair_dn >= 0.25 and rem_sec > 45.0:
@@ -575,12 +578,16 @@ class Crypto5mEngine:
         if (inv.up_cost + inv.down_cost) >= self.budget_per_order_usd * 2.0:
             return orders
 
-        # 仅在稳健平衡区 [0.38 ~ 0.62] 挂轻仓折价试探 (结合 OFI 微观动量防单边逆向接飞刀)
-        # 若 ofi_up > 0.15 偏向多头，则只挂 UP 折价；若 ofi_up < -0.15 偏向空头，则只挂 DOWN 折价；中性时双边挂
-        if 0.38 <= fair_up <= 0.62 and ofi_up >= -0.15:
-            _add_order("UP", fair_up - 0.040, "discount", budget_scale=0.65)
-        if 0.38 <= fair_dn <= 0.62 and ofi_up <= 0.15:
-            _add_order("DOWN", fair_dn - 0.040, "discount", budget_scale=0.65)
+        # 仅在稳健平衡区挂轻仓折价试探 (结合 OFI 微观动量防单边逆向接飞刀)
+        # 高波动币种 (SOL) 收窄开仓平衡带至 [0.42 ~ 0.58]，折价加深至 5.0¢ 提高安全垫
+        eq_low = 0.42 if inv.coin == "sol" else 0.38
+        eq_high = 0.58 if inv.coin == "sol" else 0.62
+        discount_cents = 0.050 if inv.coin == "sol" else 0.040
+
+        if eq_low <= fair_up <= eq_high and ofi_up >= -0.15:
+            _add_order("UP", fair_up - discount_cents, "discount", budget_scale=0.65)
+        if eq_low <= fair_dn <= eq_high and ofi_up <= 0.15:
+            _add_order("DOWN", fair_dn - discount_cents, "discount", budget_scale=0.65)
 
         return orders
 

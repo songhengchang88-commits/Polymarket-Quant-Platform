@@ -7,22 +7,11 @@ with open('data/crypto_5m_paper_rounds.jsonl', 'r', encoding='utf-8') as f:
         if line.strip():
             rounds.append(json.loads(line))
 
-# The restart happened at 15:38:09 UTC
-t_reset = datetime.fromisoformat('2026-11-13T15:38:09+00:00')
-t_prev = datetime.fromisoformat('2026-11-13T13:38:09+00:00')
+t_v33 = '2026-11-13T17:29:11'
+t_v32 = '2026-11-13T15:38:09'
 
-prev_rounds = []
-curr_rounds = []
-
-for r in rounds:
-    ts_str = r.get('ts')
-    if not ts_str:
-        continue
-    dt = datetime.fromisoformat(ts_str)
-    if t_prev <= dt < t_reset:
-        prev_rounds.append(r)
-    elif dt >= t_reset:
-        curr_rounds.append(r)
+v32_rounds = [r for r in rounds if t_v32 <= r.get('ts', '') < t_v33]
+v33_rounds = [r for r in rounds if r.get('ts', '') >= t_v33]
 
 def analyze(rset, name):
     n = len(rset)
@@ -49,11 +38,11 @@ def analyze(rset, name):
     
     print(f"=== {name} (共 {n} 轮) ===")
     print(f"胜率: {wins}/{n} ({wins/n*100:.1f}%) | 净盈亏: {total_pnl:+.4f}U")
-    print(f"配对达成率: {paired_cnt}/{n} ({paired_cnt/n*100:.1f}%) | 单边暴露轮次: {unpaired_cnt}/{n} ({unpaired_cnt/n*100:.1f}%)")
+    print(f"配对达成率: {paired_cnt}/{n} ({paired_cnt/n*100:.1f}%) | 单边暴露: {unpaired_cnt}/{n} ({unpaired_cnt/n*100:.1f}%)")
     for c, stats in by_coin.items():
         cn = stats['n']
-        print(f"  - {c.upper():4}: {stats['wins']}/{cn} 胜 ({stats['wins']/cn*100:.1f}%) | 盈亏: {stats['pnl']:+.4f}U | 配对: {stats['paired']}/{cn} ({stats['paired']/cn*100:.1f}%) | 总投入: ${stats['cost']:.2f}")
+        print(f"  - {c.upper():4}: {stats['wins']}/{cn} 胜 ({stats['wins']/cn*100:.1f}%) | 盈亏: {stats['pnl']:+.4f}U | 配对: {stats['paired']}/{cn} ({stats['paired']/cn*100:.1f}%) | 投入: ${stats['cost']:.2f}")
 
-analyze(prev_rounds, "上期2小时 (基数累积期·无30s冻结/无滑点惩罚)")
+analyze(v32_rounds, "上期 (v3.2 初始特训期 · 37轮)")
 print()
-analyze(curr_rounds, "当期特训 (v3.2·$30原点起跑·30s链上锁·0.015滑点惩罚)")
+analyze(v33_rounds, "当期 (v3.3 紧急穿盘救险 + 15s生命线 · 28轮)")
