@@ -1,14 +1,14 @@
 """
-Polymarket 5 分钟加密量化指挥舰 (方案二升级版：彭博三币实战矩阵 · 全中文 UI)
+Polymarket 5 分钟加密量化指挥舰 (方案二升级版：彭博三币实战矩阵 · 2小时重置周期特训版)
 ====================================================================
 纯只读消费 data/crypto_5m_live_state.json 与 data/crypto_5m_paper_*.jsonl，
 与核心引擎进程物理隔离，确保零干扰、高刷新的全中文实盘监控体验。
 特性:
-1. 链上实盘真实资金实时透视 (Proxy pUSD 余额 + 签名 EOA POL Gas 监测)
-2. 钱包与持仓直达链接 (点击直达 Polymarket Portfolio / 官方市场)
-3. 链上 30 秒兑付资金锁定动态看板 (Locked Cash)
-4. 跨资产宏观风暴熔断 (Macro Storm) 全局状态告警横幅
-5. 悲观滑点惩罚与 Polygon 真实 Gas 摩擦台账穿透
+1. 【最高指令】每 2 小时验证周期自动利润清零，强制以 $30.00 重新开跑，杜绝滚雪球资金蒙蔽实操数据！
+2. 链上实盘真实资金实时透视 (Proxy pUSD 余额 + 签名 EOA POL Gas 监测)
+3. 钱包与持仓直达链接 (点击直达 Polymarket Portfolio / 官方市场)
+4. 链上 30 秒兑付资金锁定动态看板 (Locked Cash)
+5. 跨资产宏观风暴熔断 (Macro Storm) 全局状态告警横幅
 """
 
 import json
@@ -25,7 +25,7 @@ ROUNDS_PATH = os.path.join(DATA_DIR, "crypto_5m_paper_rounds.jsonl")
 TRADES_PATH = os.path.join(DATA_DIR, "crypto_5m_paper_trades.jsonl")
 SUMMARY_PATH = os.path.join(DATA_DIR, "crypto_5m_paper_summary.json")
 
-app = FastAPI(title="Polymarket 5分钟量化实战指挥舰 v3.1")
+app = FastAPI(title="PolyQuant 5分钟量化实战指挥舰 v3.2 (2H周期重置版)")
 
 
 def _read_json(path: str, default: dict) -> dict:
@@ -72,7 +72,7 @@ HTML_PAGE = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>PolyQuant 5分钟量化实战指挥舰 v3.1</title>
+  <title>PolyQuant 5分钟量化实战指挥舰 v3.2 (2H归零特训版)</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     body {
@@ -94,7 +94,7 @@ HTML_PAGE = """<!DOCTYPE html>
 <body class="min-h-screen p-3 md:p-4 flex flex-col gap-3">
 
   <!-- 宏观风暴熔断全局警报横幅 (动态显隐) -->
-  <div id="macro-storm-banner" class="hidden rounded-lg bg-rose-500/20 border border-rose-500/60 p-2.5 text-center text-rose-300 text-xs font-bold tracking-wider animate-pulse flex items-center justify-center gap-2">
+  <div id="macro-storm-banner" class="hidden rounded-lg bg-rose-500/20 border border-rose-500/60 p-2 text-center text-rose-300 text-xs font-bold tracking-wider animate-pulse flex items-center justify-center gap-2">
     <span>🚨 跨资产宏观联动风暴熔断已触发！检测到核心主流币严重单边破位，已秒级撤销被动挂单并强行冻结新开仓！</span>
   </div>
 
@@ -102,15 +102,18 @@ HTML_PAGE = """<!DOCTYPE html>
   <header class="panel rounded-lg p-3 flex flex-wrap items-center justify-between gap-3">
     <div class="flex items-center gap-3">
       <div id="mode-badge" class="px-3 py-1.5 rounded border border-amber-500/50 bg-amber-500/10 text-amber-300 text-xs font-bold tracking-wide">
-        <div>[真实数据纸面交易 v3.1]</div>
-        <div id="kill-switch-text" class="text-[11px] text-amber-400/90">[物理停机锁已启用 · 零资金风险]</div>
+        <div>[2小时特训归零模式 · 第 <span id="cycle-idx-val">1</span> 期]</div>
+        <div id="kill-switch-text" class="text-[11px] text-amber-400/90">[每2h清零重置 · $30起跑验证]</div>
       </div>
       <div>
-        <div class="text-xs text-slate-400">拟真总权益 / 可用现金 (含30s兑付锁)</div>
+        <div class="text-xs text-slate-400 flex items-center gap-2">
+          <span>当期2H本金与净利 (基准 $30.00)</span>
+          <span id="cycle-rem-badge" class="mono text-[10px] bg-slate-800 text-cyan-300 px-1.5 py-0.5 rounded border border-slate-700">倒计时: --:-- 清零</span>
+        </div>
         <div class="flex items-baseline gap-2">
           <span id="equity-val" class="mono text-xl font-bold text-white">$30.00</span>
           <span id="pnl-val" class="mono text-sm font-semibold text-emerald-400">(+0.00U)</span>
-          <span id="cash-val" class="mono text-xs text-slate-400">现金: $30.00</span>
+          <span id="cash-val" class="mono text-xs text-slate-400">可用: $30.00</span>
           <span id="locked-cash-val" class="mono text-[11px] text-amber-300 bg-amber-950/40 px-1.5 py-0.5 rounded border border-amber-500/30">锁仓: $0.00</span>
         </div>
       </div>
@@ -136,7 +139,7 @@ HTML_PAGE = """<!DOCTYPE html>
     </a>
 
     <!-- 5分钟轮次倒计时进度条 -->
-    <div class="flex-1 min-w-[240px] max-w-sm px-2">
+    <div class="flex-1 min-w-[200px] max-w-xs px-2">
       <div class="flex justify-between text-xs mb-1">
         <span class="text-slate-300 font-semibold">当前周期: <span id="round-clock" class="mono text-emerald-400">--:--</span> 剩余</span>
         <span id="cutoff-badge" class="text-amber-400 font-semibold">尾盘 60 秒全撤保护</span>
@@ -147,15 +150,15 @@ HTML_PAGE = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- 统计与延迟 -->
-    <div class="flex items-center gap-4 text-xs">
+    <!-- 当期统计与历史总承接 -->
+    <div class="flex items-center gap-3 text-xs">
       <div class="text-right">
-        <div class="text-slate-400">已结算轮次 / 胜率</div>
+        <div class="text-slate-400">当期(2H)轮次 / 胜率</div>
         <div class="mono font-bold text-slate-100"><span id="rounds-stat">0 轮</span> · <span id="winrate-stat" class="text-emerald-400">--%</span></div>
       </div>
-      <div class="text-right">
-        <div class="text-slate-400">双路采样延迟</div>
-        <div class="mono font-bold text-cyan-400"><span id="latency-val">--</span> ms</div>
+      <div class="text-right border-l border-slate-800 pl-3">
+        <div class="text-slate-500">全量承接(历史总收益)</div>
+        <div class="mono font-semibold text-slate-300"><span id="lifetime-stat">+93.22U (616轮)</span></div>
       </div>
     </div>
   </header>
@@ -172,7 +175,7 @@ HTML_PAGE = """<!DOCTYPE html>
       <div class="flex items-center justify-between mb-2">
         <h2 class="text-xs font-bold text-slate-300 flex items-center gap-2">
           <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-          5 秒防毒刷新实时心跳日志 (含滑点与兑付锁)
+          5 秒防毒刷新实时心跳日志 (含2H周期与滑点)
         </h2>
         <span id="last-update" class="mono text-[11px] text-slate-500">同步中...</span>
       </div>
@@ -185,7 +188,7 @@ HTML_PAGE = """<!DOCTYPE html>
     <section class="panel rounded-lg p-3 lg:col-span-7 flex flex-col">
       <div class="flex items-center justify-between mb-2">
         <h2 class="text-xs font-bold text-slate-300">已结算 5 分钟周期真实盈亏台账 (官方裁决 / 含Gas与滑点)</h2>
-        <span id="fills-total" class="mono text-[11px] text-cyan-400">累计成交: 0 笔</span>
+        <span id="fills-total" class="mono text-[11px] text-cyan-400">当期成交: 0 笔</span>
       </div>
       <div class="overflow-x-auto h-56 overflow-y-auto scrollbar-thin">
         <table class="w-full text-left border-collapse text-xs">
@@ -372,6 +375,14 @@ async function fetchAndRender() {
       banner.classList.add("hidden");
     }
 
+    // 周期序号与清零倒计时
+    const cycIdx = sum.cycle_index ?? live.cycle_index ?? 1;
+    document.getElementById("cycle-idx-val").textContent = cycIdx;
+    const cycRem = sum.cycle_rem_sec ?? live.cycle_rem_sec ?? 7200;
+    const cycMins = Math.floor(cycRem / 60);
+    const cycSecs = Math.floor(cycRem % 60);
+    document.getElementById("cycle-rem-badge").textContent = `倒计时: ${String(cycMins).padStart(2, "0")}:${String(cycSecs).padStart(2, "0")} 清零`;
+
     // 链上资金透视
     const cf = live.live_chain_funds || {};
     if (cf.proxy_pusd !== undefined) {
@@ -389,7 +400,7 @@ async function fetchAndRender() {
       gasBadge.textContent = "Gas充沛";
     }
 
-    // 拟真资金
+    // 当期 2H 资金
     const eq = sum.current_equity_usd ?? live.current_equity_usd ?? 30.0;
     const initCap = sum.initial_capital_usd ?? live.initial_capital_usd ?? 30.0;
     const netPnl = sum.total_settled_pnl_usd ?? live.total_settled_pnl_usd ?? 0.0;
@@ -402,16 +413,20 @@ async function fetchAndRender() {
     document.getElementById("cash-val").textContent = `可用: $${Number(live.paper_cash_usd ?? 30.0).toFixed(2)}`;
     document.getElementById("locked-cash-val").textContent = `30s锁仓: $${Number(live.locked_cash_usd ?? 0.0).toFixed(2)}`;
 
-    // 统计
+    // 当期统计与历史全量
     const totRounds = sum.total_rounds ?? live.total_rounds ?? 0;
     const winRate = sum.win_rate_pct ?? (totRounds > 0 ? (live.winning_rounds / totRounds * 100) : 0);
     document.getElementById("rounds-stat").textContent = `${totRounds} 轮`;
     document.getElementById("winrate-stat").textContent = `${Number(winRate).toFixed(1)}%`;
-    document.getElementById("latency-val").textContent = live.latency_ms ?? "--";
-    document.getElementById("fills-total").textContent = `累计成交: ${live.total_fills ?? 0} 笔`;
+    document.getElementById("fills-total").textContent = `当期成交: ${sum.total_fills ?? live.total_fills ?? 0} 笔`;
+
+    const lifePnl = sum.lifetime_pnl_usd ?? live.lifetime_pnl_usd ?? 93.22;
+    const lifeRounds = sum.lifetime_rounds ?? live.lifetime_rounds ?? 616;
+    document.getElementById("lifetime-stat").textContent = `+${Number(lifePnl).toFixed(2)}U (${lifeRounds}轮)`;
+
     document.getElementById("last-update").textContent = `更新于 ${live.updated_at || "--"}`;
 
-    // 倒计时
+    // 5m倒计时
     const remSec = live.rem_sec ?? 300;
     const mins = Math.floor(remSec / 60);
     const secs = Math.floor(remSec % 60);

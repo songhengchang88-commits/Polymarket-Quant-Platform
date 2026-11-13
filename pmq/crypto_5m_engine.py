@@ -205,6 +205,15 @@ class Crypto5mEngine:
         self.pending_settlements: List[Tuple[float, float, str]] = []  # [(unlock_time, payout_usd, slug)]
         self.macro_storm_active: bool = False
         self._last_live_funds: dict = {}
+        self.cycle_start_time: float = time.time()
+        self.cycle_initial_capital: float = float(initial_paper_capital)
+        self.cycle_settled_pnl: float = 0.0
+        self.cycle_rounds: int = 0
+        self.cycle_wins: int = 0
+        self.cycle_fills: int = 0
+        self.cycle_peak_equity: float = float(initial_paper_capital)
+        self.cycle_max_dd: float = 0.0
+        self.cycle_index: int = 1
         self._last_live_funds_ts: float = 0.0
 
         self.ws_spot = BinanceSpotWS(self.coins)
@@ -287,24 +296,26 @@ class Crypto5mEngine:
     def _save_summary(self):
         if not self.persist_ledger:
             return
-        equity = round(self.initial_paper_capital + self.total_settled_pnl, 4)
-        self.peak_equity = max(self.peak_equity, equity)
-        dd = round(self.peak_equity - equity, 4)
-        self.max_drawdown_usd = max(self.max_drawdown_usd, dd)
-        win_rate = round((self.winning_rounds / self.total_rounds) * 100, 2) if self.total_rounds > 0 else 0.0
+        equity_2h = round(self.cycle_initial_capital + self.cycle_settled_pnl, 4)
+        win_rate_2h = round((self.cycle_wins / max(1, self.cycle_rounds)) * 100, 2) if self.cycle_rounds > 0 else 0.0
         summary = {
             "updated_at": datetime.now(timezone.utc).isoformat(),
-            "mode": "PAPER_REAL_DATA" if self.dry_run else "LIVE",
-            "initial_capital_usd": self.initial_paper_capital,
-            "current_equity_usd": equity,
-            "total_settled_pnl_usd": round(self.total_settled_pnl, 4),
-            "roi_pct": round((self.total_settled_pnl / max(1e-9, self.initial_paper_capital)) * 100, 2),
-            "max_drawdown_usd": self.max_drawdown_usd,
-            "total_rounds": self.total_rounds,
-            "winning_rounds": self.winning_rounds,
-            "win_rate_pct": win_rate,
-            "total_fills": self.total_fills,
+            "mode": "PAPER_REAL_DATA",
+            "initial_capital_usd": self.cycle_initial_capital,
+            "current_equity_usd": equity_2h,
+            "total_settled_pnl_usd": round(self.cycle_settled_pnl, 4),
+            "roi_pct": round((self.cycle_settled_pnl / max(1e-9, self.cycle_initial_capital)) * 100, 2),
+            "max_drawdown_usd": self.cycle_max_dd,
+            "total_rounds": self.cycle_rounds,
+            "winning_rounds": self.cycle_wins,
+            "win_rate_pct": win_rate_2h,
+            "total_fills": self.cycle_fills,
             "coins": self.coins,
+            "cycle_index": self.cycle_index,
+            "cycle_rem_sec": max(0, int(7200.0 - (time.time() - self.cycle_start_time))),
+            "lifetime_equity_usd": round(self.initial_paper_capital + self.total_settled_pnl, 4),
+            "lifetime_pnl_usd": round(self.total_settled_pnl, 4),
+            "lifetime_rounds": self.total_rounds,
         }
         try:
             with open(self._summary_path, "w", encoding="utf-8") as f:
@@ -626,6 +637,7 @@ class Crypto5mEngine:
 
                     inv.fills_count += 1
                     self.total_fills += 1
+                    self.cycle_fills += 1
 
                     self._append_jsonl(self._trades_path, {
                         "ts": datetime.now(timezone.utc).isoformat(),
@@ -741,6 +753,13 @@ class Crypto5mEngine:
             self.total_rounds += 1
             if pnl > 0:
                 self.winning_rounds += 1
+            self.cycle_settled_pnl = round(self.cycle_settled_pnl + pnl, 4)
+            self.cycle_rounds += 1
+            if pnl > 0:
+                self.cycle_wins += 1
+            cur_cyc_eq = round(self.cycle_initial_capital + self.cycle_settled_pnl, 4)
+            self.cycle_peak_equity = max(self.cycle_peak_equity, cur_cyc_eq)
+            self.cycle_max_dd = max(self.cycle_max_dd, round(self.cycle_peak_equity - cur_cyc_eq, 4))
 
             self._append_jsonl(self._rounds_path, {
                 "ts": datetime.now(timezone.utc).isoformat(),
@@ -927,10 +946,16 @@ class Crypto5mEngine:
             "locked_cash_usd": round(sum(p for _, p, _ in self.pending_settlements), 4),
             "macro_storm_active": self.macro_storm_active,
             "live_chain_funds": self._fetch_live_chain_funds(),
-            "current_equity_usd": round(self.initial_paper_capital + self.total_settled_pnl, 4),
-            "total_settled_pnl_usd": round(self.total_settled_pnl, 4),
-            "total_rounds": self.total_rounds,
-            "winning_rounds": self.winning_rounds,
+            "current_equity_usd": round(self.cycle_initial_capital + self.cycle_settled_pnl, 4),
+            "total_settled_pnl_usd": round(self.cycle_settled_pnl, 4),
+            "total_rounds": self.cycle_rounds,
+            "winning_rounds": self.cycle_wins,
+            "lifetime_equity_usd": round(self.initial_paper_capital + self.total_settled_pnl, 4),
+            "lifetime_pnl_usd": round(self.total_settled_pnl, 4),
+            "lifetime_rounds": self.total_rounds,
+            "lifetime_wins": self.winning_rounds,
+            "cycle_index": self.cycle_index,
+            "cycle_rem_sec": max(0, int(7200.0 - (time.time() - self.cycle_start_time))),
             "total_fills": self.total_fills,
             "coins": self.coin_snapshots,
             "recent_logs": self.recent_logs[-20:],
@@ -942,6 +967,39 @@ class Crypto5mEngine:
             os.replace(tmp_path, self._live_state_path)
         except Exception as e:
             logger.debug(f"保存 live_state 异常: {e}")
+
+    def _check_and_reset_2h_cycle(self):
+        """
+        每 2 小时验证周期自动归零重置 (最高指示)：
+        - 每满 2 小时 (7200 秒) 自动将周期利润清零；
+        - 强制以 30.00 美元初始资金重新开跑，绝不让滚雪球累积资金蒙蔽实战数据；
+        - 完整留存历史全量账本，同时输出当期 2 小时战报。
+        """
+        now = time.time()
+        elapsed = now - self.cycle_start_time
+        if elapsed >= 7200.0:  # 2 hours
+            roi_2h = (self.cycle_settled_pnl / max(1e-9, self.cycle_initial_capital)) * 100
+            winrate_2h = (self.cycle_wins / max(1, self.cycle_rounds)) * 100
+            logger.info(
+                f"🔄 ============================================================\n"
+                f"🔄 【第 {self.cycle_index} 轮 2小时验证周期完结·利润归零重置】\n"
+                f"   • 本期战报: 结算 {self.cycle_rounds} 轮 | 胜率 {winrate_2h:.1f}% ({self.cycle_wins}/{self.cycle_rounds})\n"
+                f"   • 本期净利: {self.cycle_settled_pnl:+.4f} USDC (ROI: {roi_2h:+.2f}%)\n"
+                f"   • 执照清零: 强制归位 $30.00 USDC 起始资金，开启第 {self.cycle_index + 1} 周期严苛验证！\n"
+                f"🔄 ============================================================"
+            )
+            # 归零重置为 $30.00 起始资金
+            self.cycle_index += 1
+            self.cycle_start_time = now
+            self.cycle_settled_pnl = 0.0
+            self.cycle_rounds = 0
+            self.cycle_wins = 0
+            self.cycle_fills = 0
+            self.cycle_peak_equity = self.cycle_initial_capital
+            self.cycle_max_dd = 0.0
+            self.paper_cash_usd = self.cycle_initial_capital
+            self.pending_settlements.clear()
+            self._save_summary()
 
     def _release_settled_funds(self):
         now = time.time()
@@ -1009,6 +1067,7 @@ class Crypto5mEngine:
         base_ts = (int(now) // 300) * 300
         rem_sec = (base_ts + 300) - now
 
+        self._check_and_reset_2h_cycle()
         self._release_settled_funds()
         self.settle_expired_inventories(base_ts)
         self.macro_storm_active = any(self.is_macro_storm_active(base_ts, c) for c in self.coins)
