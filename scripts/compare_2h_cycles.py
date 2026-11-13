@@ -7,11 +7,11 @@ with open('data/crypto_5m_paper_rounds.jsonl', 'r', encoding='utf-8') as f:
         if line.strip():
             rounds.append(json.loads(line))
 
+t_v34 = '2026-11-13T18:54:01'
 t_v33 = '2026-11-13T17:29:11'
-t_v32 = '2026-11-13T15:38:09'
 
-v32_rounds = [r for r in rounds if t_v32 <= r.get('ts', '') < t_v33]
-v33_rounds = [r for r in rounds if r.get('ts', '') >= t_v33]
+v33_rounds = [r for r in rounds if t_v33 <= r.get('ts', '') < t_v34]
+v34_rounds = [r for r in rounds if r.get('ts', '') >= t_v34]
 
 def analyze(rset, name):
     n = len(rset)
@@ -43,6 +43,6 @@ def analyze(rset, name):
         cn = stats['n']
         print(f"  - {c.upper():4}: {stats['wins']}/{cn} 胜 ({stats['wins']/cn*100:.1f}%) | 盈亏: {stats['pnl']:+.4f}U | 配对: {stats['paired']}/{cn} ({stats['paired']/cn*100:.1f}%) | 投入: ${stats['cost']:.2f}")
 
-analyze(v32_rounds, "上期 (v3.2 初始特训期 · 37轮)")
+analyze(v33_rounds, "上期 (v3.3 紧急穿盘救险初期 · 17:29~18:54 UTC)")
 print()
-analyze(v33_rounds, "当期 (v3.3 紧急穿盘救险 + 15s生命线 · 28轮)")
+analyze(v34_rounds, "当期 (v3.4 破除对冲死锁+SOL高波收窄+30U现金硬顶 · 18:54~20:32 UTC)")

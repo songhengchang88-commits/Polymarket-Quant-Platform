@@ -478,6 +478,7 @@ class Crypto5mEngine:
         rem_sec: float = 180.0,
         ofi_up: float = 0.0,
         macro_storm_active: bool = False,
+        spot: float = 0.0,
     ) -> List[GridOrder]:
         """
         防接飞刀 + 单边硬锁 + 宏观风暴熔断 + 阶梯动态滑窗 (v2.9):
@@ -524,10 +525,14 @@ class Crypto5mEngine:
             used_prices[side].add(p)
             orders.append(GridOrder(side=side, price=p, shares=shares, cost_usd=cost, tag=tag))
 
+        drift_pct = abs(spot - inv.strike_k) / max(1.0, inv.strike_k) if (spot > 0 and inv.strike_k > 0) else 0.0
+        # 真实大幅破位判定: 现货偏离基准 K 超过 0.15% (ETH > $3, BTC > $100)，或时间进入尾盘 60s
+        is_genuine_breakout = (drift_pct > 0.0015 or rem_sec <= 60.0)
+
         # 情况 A: 当前持有未配对 UP 敞口 -> 死锁 UP 开仓，挂 1:1 对冲 (时间衰减 + 现货漂移联合动态滑窗)
         if unpaired_up > 0.1:
-            # 1. 优先判定严重单边暴跌 (fair_up < 0.22) 或尾盘 (rem_sec <= 45s): 立即放宽上限至 1.25，越早穿盘对冲滑点越小，绝不能坐等归零！
-            if fair_up < 0.22 or rem_sec <= 45.0:
+            # 1. 救险穿盘对冲 (Emergency Taker Hedge): 仅在真实破位或尾盘 45s 时启动上限 1.25，避免中盘布朗微观噪音洗盘误追高！
+            if (fair_up < 0.22 and is_genuine_breakout) or rem_sec <= 45.0:
                 target_cap = 1.25
             elif fair_up < 0.35 and rem_sec > 60.0:
                 target_cap = 1.00   # 现货快速下杀破位，提前平价保本锁死对冲
@@ -550,8 +555,8 @@ class Crypto5mEngine:
 
         # 情况 B: 当前持有未配对 DOWN 敞口 -> 死锁 DOWN 开仓，挂 1:1 对冲 (时间衰减 + 现货漂移联合动态滑窗)
         if unpaired_dn > 0.1:
-            # 1. 优先判定严重单边暴拉 (fair_dn < 0.22) 或尾盘 (rem_sec <= 45s): 立即放宽上限至 1.25，越早穿盘对冲滑点越小！
-            if fair_dn < 0.22 or rem_sec <= 45.0:
+            # 1. 救险穿盘对冲 (Emergency Taker Hedge): 仅在真实破位或尾盘 45s 时启动上限 1.25
+            if (fair_dn < 0.22 and is_genuine_breakout) or rem_sec <= 45.0:
                 target_cap = 1.25
             elif fair_dn < 0.35 and rem_sec > 60.0:
                 target_cap = 1.00   # 现货快速拉升破位，提前平价保本锁死对冲
@@ -925,7 +930,7 @@ class Crypto5mEngine:
                     logger.warning(f"🚨 [风暴毫秒全撤] {coin.upper()} 宏观风暴触发，紧急注销 {len(non_hedge)} 笔被动试探单")
                     inv.open_orders = [o for o in inv.open_orders if o.tag == "hedge"]
         inv.open_orders = self.build_safe_grid(
-            fair_up, fair_dn, inv, rem_sec=rem_sec, ofi_up=ofi_up, macro_storm_active=macro_storm
+            fair_up, fair_dn, inv, rem_sec=rem_sec, ofi_up=ofi_up, macro_storm_active=macro_storm, spot=spot_st.spot
         )
         grid_desc = ", ".join(f"{o.side}@{o.price:.2f}({o.tag})" for o in inv.open_orders[:4])
 
