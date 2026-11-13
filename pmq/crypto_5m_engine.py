@@ -535,9 +535,13 @@ class Crypto5mEngine:
             elif rem_sec > 60.0:
                 target_cap = 1.00   # 临近尾盘保本对冲 (平价锁死配对，零亏损)
             else:
-                target_cap = 1.12 if fair_up < 0.25 else 1.02  # 尾盘根据逆势深度自适应减损
+                # 尾盘 (rem_sec <= 60s) 或严重单边逆行 (fair_up < 0.22): 启动紧急穿盘对冲，上限放宽至 1.25，截断 100% 归零惨剧！
+                target_cap = 1.25 if (fair_up < 0.22 or is_drifting_against) else (1.12 if fair_up < 0.25 else 1.02)
 
-            max_hedge_dn = min(fair_dn - 0.015, target_cap - inv.avg_up_cost)
+            max_hedge_dn = min(0.96, target_cap - inv.avg_up_cost)
+            if fair_up >= 0.25 and rem_sec > 45.0:
+                max_hedge_dn = min(max_hedge_dn, fair_dn - 0.015)
+
             if max_hedge_dn >= 0.03:
                 _add_order("DOWN", max_hedge_dn, "hedge", fixed_shares=unpaired_up)
             return orders
@@ -554,9 +558,13 @@ class Crypto5mEngine:
             elif rem_sec > 60.0:
                 target_cap = 1.00   # 临近尾盘保本对冲 (平价锁死配对，零亏损)
             else:
-                target_cap = 1.12 if fair_dn < 0.25 else 1.02  # 尾盘根据逆势深度自适应减损
+                # 尾盘 (rem_sec <= 60s) 或严重单边逆行 (fair_dn < 0.22): 启动紧急穿盘对冲，上限放宽至 1.25，截断 100% 归零惨剧！
+                target_cap = 1.25 if (fair_dn < 0.22 or is_drifting_against) else (1.12 if fair_dn < 0.25 else 1.02)
 
-            max_hedge_up = min(fair_up - 0.015, target_cap - inv.avg_down_cost)
+            max_hedge_up = min(0.96, target_cap - inv.avg_down_cost)
+            if fair_dn >= 0.25 and rem_sec > 45.0:
+                max_hedge_up = min(max_hedge_up, fair_up - 0.015)
+
             if max_hedge_up >= 0.03:
                 _add_order("UP", max_hedge_up, "hedge", fixed_shares=unpaired_dn)
             return orders
@@ -567,10 +575,11 @@ class Crypto5mEngine:
         if (inv.up_cost + inv.down_cost) >= self.budget_per_order_usd * 2.0:
             return orders
 
-        # 仅在稳健平衡区 [0.38 ~ 0.62] 挂 1 档轻仓折价试探 (65% 预算，折价 4.0¢)
-        if 0.38 <= fair_up <= 0.62:
+        # 仅在稳健平衡区 [0.38 ~ 0.62] 挂轻仓折价试探 (结合 OFI 微观动量防单边逆向接飞刀)
+        # 若 ofi_up > 0.15 偏向多头，则只挂 UP 折价；若 ofi_up < -0.15 偏向空头，则只挂 DOWN 折价；中性时双边挂
+        if 0.38 <= fair_up <= 0.62 and ofi_up >= -0.15:
             _add_order("UP", fair_up - 0.040, "discount", budget_scale=0.65)
-        if 0.38 <= fair_dn <= 0.62:
+        if 0.38 <= fair_dn <= 0.62 and ofi_up <= 0.15:
             _add_order("DOWN", fair_dn - 0.040, "discount", budget_scale=0.65)
 
         return orders
@@ -826,14 +835,28 @@ class Crypto5mEngine:
             self.inventories[slug] = inv
             logger.info(f"🆕 [新开5m盘口] {slug} | 基准价 K={spot_st.strike_k:.2f} | 剩余 {rem_sec:.0f}s")
 
-        if rem_sec <= self.cutoff_seconds:
+        # 小资金并发控制 (Small-Capital Slot Allocator):
+        # 在 $30 原点资金特训下，若可用现金低于 $18，且已有其他币种持有单边敞口，
+        # 严禁本币种新开试探仓，全力保证已有仓位对冲资金充沛！
+        if self.paper_cash_usd < 18.0 and inv.up_shares == 0.0 and inv.down_shares == 0.0:
+            has_other_active = any(
+                (o_inv.coin != coin and o_inv.base_ts == base_ts and (o_inv.up_shares > 0.1 or o_inv.down_shares > 0.1))
+                for o_inv in self.inventories.values()
+            )
+            if has_other_active:
+                if inv.open_orders:
+                    inv.open_orders = []
+                return
+
+        # 尾盘精细化熔断处理 (Precision Cutoff Logic):
+        # 1. 剩余 <= 15s 强制注销所有未成交挂单，绝对锁仓等结算
+        if rem_sec <= 15.0:
             if inv.open_orders:
                 cut_msg = (
-                    f"🛑 [尾盘60s全撤] {slug} 剩余 {rem_sec:.1f}s，撤销 {len(inv.open_orders)} 笔未成交挂单 | "
-                    f"持仓 UP:{inv.up_shares:.1f} DN:{inv.down_shares:.1f} 锁仓待结算"
+                    f"🛑 [尾盘15s绝对锁仓] {slug} 剩余 {rem_sec:.1f}s，清空挂单锁死待结算 | "
+                    f"持仓 UP:{inv.up_shares:.1f} DN:{inv.down_shares:.1f}"
                 )
                 self._push_log(cut_msg)
-                logger.info(cut_msg)
                 inv.open_orders = []
             if coin in self.coin_snapshots:
                 self.coin_snapshots[coin]["in_cutoff"] = True
@@ -841,6 +864,16 @@ class Crypto5mEngine:
                 self.coin_snapshots[coin]["up_shares"] = inv.up_shares
                 self.coin_snapshots[coin]["down_shares"] = inv.down_shares
             return
+
+        # 2. 剩余 <= 60s 仅撤销开仓试探单 (discount)，严禁尾盘开新仓；
+        # 对冲单 (hedge) 给予保护，保留至剩 15s，给予救险对冲充分撮合时间！
+        if rem_sec <= self.cutoff_seconds:
+            discount_orders = [o for o in inv.open_orders if o.tag == "discount"]
+            if discount_orders:
+                inv.open_orders = [o for o in inv.open_orders if o.tag != "discount"]
+                self._push_log(f"🛑 [尾盘{self.cutoff_seconds:.0f}s撤试探] {slug} 撤销 {len(discount_orders)} 笔开仓单，保留对冲防守单")
+            if coin in self.coin_snapshots:
+                self.coin_snapshots[coin]["in_cutoff"] = True
 
         bids_up, asks_up = self.fetch_clob_book(inv.token_up)
         bids_dn, asks_dn = self.fetch_clob_book(inv.token_down)

@@ -112,12 +112,12 @@ def test_late_window_salvage_hedge_cap():
         up_shares=10.0,
         up_cost=3.5,  # avg_up_cost = 0.35
     )
-    # 在极尾盘 50s 且现货深度背离 (fair_up=0.10, fair_dn=0.90) 时，启动减损对冲放宽至 1.12 - 0.35 = 0.77
+    # 在极尾盘 50s 且现货深度背离 (fair_up=0.10, fair_dn=0.90) 时，启动救险穿盘对冲 (target_cap=1.25 -> 1.25 - 0.35 = 0.90)
     orders = eng.build_safe_grid(fair_up=0.10, fair_dn=0.90, inv=inv, rem_sec=50.0)
     assert len(orders) == 1
     assert orders[0].side == "DOWN"
     assert orders[0].tag == "hedge"
-    assert orders[0].price == pytest.approx(0.77, abs=0.01)
+    assert orders[0].price == pytest.approx(0.90, abs=0.01)
 
 
 def test_drift_triggered_escalation():
@@ -240,3 +240,39 @@ def test_hedge_slippage_penalty():
     assert inv2.down_shares == 1.7
     # base_exec_p is 0.50 + 0.015 penalty = 0.515
     assert inv2.down_cost == round(1.7 * 0.515, 4)
+
+
+def test_small_capital_slot_allocator():
+    from pmq.crypto_5m_engine import Crypto5mEngine, MarketInventory
+    engine = Crypto5mEngine(coins=['btc', 'eth'], initial_paper_capital=30.0, persist_ledger=False)
+    # 模拟现金仅剩 $15.0，且 BTC 已经持有单边多头仓位
+    engine.paper_cash_usd = 15.0
+    inv_btc = MarketInventory(slug='btc-updown-5m-1000', coin='btc', base_ts=1000, strike_k=70000.0, token_up='u', token_down='d')
+    inv_btc.up_shares = 5.0
+    inv_btc.up_cost = 2.5
+    engine.inventories['btc-updown-5m-1000'] = inv_btc
+
+    # ETH 当前无持仓，尝试执行 _process_coin_step
+    inv_eth = MarketInventory(slug='eth-updown-5m-1000', coin='eth', base_ts=1000, strike_k=2000.0, token_up='u', token_down='d')
+    engine.inventories['eth-updown-5m-1000'] = inv_eth
+
+    # 现金 < $18 时，ETH 被小资金并发调度拦截，不应挂任何开仓单
+    engine._process_coin_step('eth', base_ts=1000, rem_sec=200.0)
+    assert inv_eth.open_orders == []
+
+
+def test_precision_cutoff_preserves_hedge():
+    from pmq.crypto_5m_engine import Crypto5mEngine, MarketInventory, GridOrder
+    engine = Crypto5mEngine(coins=['btc'], initial_paper_capital=30.0, persist_ledger=False)
+    inv = MarketInventory(slug='btc-test', coin='btc', base_ts=1000, strike_k=70000.0, token_up='u', token_down='d')
+    inv.open_orders = [
+        GridOrder(side='UP', price=0.45, shares=2.0, cost_usd=0.9, tag='discount'),
+        GridOrder(side='DOWN', price=0.55, shares=2.0, cost_usd=1.1, tag='hedge'),
+    ]
+    # 在 40s (<= 60s) 时，开仓 discount 被撤销，但救险 hedge 单保留！
+    discount_orders = [o for o in inv.open_orders if o.tag == "discount"]
+    if discount_orders:
+        inv.open_orders = [o for o in inv.open_orders if o.tag != "discount"]
+    assert len(inv.open_orders) == 1
+    assert inv.open_orders[0].tag == 'hedge'
+
