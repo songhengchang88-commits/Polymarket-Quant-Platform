@@ -120,23 +120,29 @@ HTML_PAGE = """<!DOCTYPE html>
     </div>
 
     <!-- 链上实盘真实资金透视卡 (支持点击直达 Polymarket 钱包) -->
-    <a href="https://polymarket.com/zh/portfolio" target="_blank" rel="noopener noreferrer" 
-       title="点击直达官方 Polymarket 钱包资产组合页面"
-       class="panel rounded px-3 py-1.5 border border-cyan-500/30 bg-cyan-950/20 hover:bg-cyan-900/30 hover:border-cyan-400/60 transition flex items-center gap-3 text-xs cursor-pointer group">
+    <div class="panel rounded px-3 py-1.5 border border-cyan-500/30 bg-cyan-950/20 flex items-center gap-3 text-xs">
       <div>
-        <div class="text-[10px] text-cyan-400/80 font-semibold group-hover:text-cyan-300 flex items-center gap-1">
-          <span>实盘代理合约现金 (Proxy)</span>
-          <span class="text-[9px]">↗</span>
+        <div class="text-[10px] text-cyan-400/80 font-semibold flex items-center gap-1">
+          <span>实盘代理现金 (Proxy)</span>
         </div>
-        <div class="mono font-bold text-cyan-200 text-sm"><span id="live-pusd-val">$1.72</span> <span class="text-[10px] text-cyan-400">pUSD</span></div>
+        <div class="mono font-bold text-cyan-200 text-sm"><span id="live-pusd-val">$0.00</span> <span class="text-[10px] text-cyan-400">pUSD</span></div>
       </div>
       <div class="w-px h-6 bg-cyan-500/20"></div>
       <div>
-        <div class="text-[10px] text-cyan-400/80 font-semibold">实盘签名 Gas 燃料 (POL)</div>
-        <div class="mono font-bold text-emerald-300 text-sm"><span id="live-pol-val">3.6214</span> <span class="text-[10px] text-slate-400">POL</span></div>
+        <div class="text-[10px] text-cyan-400/80 font-semibold flex items-center gap-1">
+          <span>POL Gas 燃料</span>
+          <span id="wallet-addr-preview" class="text-[9px] text-slate-400 mono">--</span>
+        </div>
+        <div class="mono font-bold text-emerald-300 text-sm"><span id="live-pol-val">0.0000</span> <span class="text-[10px] text-slate-400">POL</span></div>
       </div>
-      <div id="gas-badge" class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">Gas充沛</div>
-    </a>
+      <div id="gas-badge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">沙盒保护·免Gas</div>
+      <a id="wallet-direct-link" href="https://polymarket.com/portfolio" target="_blank" rel="noopener noreferrer" 
+         title="点击直达官方 Polymarket 钱包资产组合页面"
+         class="px-2 py-1 rounded text-[11px] font-bold bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white shadow flex items-center gap-1 transition">
+        <span>👛 官方钱包</span>
+        <span class="text-[9px]">↗</span>
+      </a>
+    </div>
 
     <!-- 5分钟轮次倒计时进度条 -->
     <div class="flex-1 min-w-[200px] max-w-xs px-2">
@@ -383,7 +389,7 @@ async function fetchAndRender() {
     const cycSecs = Math.floor(cycRem % 60);
     document.getElementById("cycle-rem-badge").textContent = `倒计时: ${String(cycMins).padStart(2, "0")}:${String(cycSecs).padStart(2, "0")} 清零`;
 
-    // 链上资金透视
+    // 链上资金透视与钱包状态
     const cf = live.live_chain_funds || {};
     if (cf.proxy_pusd !== undefined) {
       document.getElementById("live-pusd-val").textContent = `$${Number(cf.proxy_pusd).toFixed(2)}`;
@@ -391,13 +397,26 @@ async function fetchAndRender() {
     if (cf.wallet_pol !== undefined) {
       document.getElementById("live-pol-val").textContent = Number(cf.wallet_pol).toFixed(4);
     }
+    if (cf.wallet_addr) {
+      const shortAddr = cf.wallet_addr.slice(0, 6) + "..." + cf.wallet_addr.slice(-4);
+      const addrEl = document.getElementById("wallet-addr-preview");
+      addrEl.textContent = `(${shortAddr})`;
+      addrEl.title = `钱包地址: ${cf.wallet_addr}\n代理合约: ${cf.proxy_addr || '无'}`;
+    }
     const gasBadge = document.getElementById("gas-badge");
-    if (cf.gas_ok === false) {
+    const isSandboxed = live.kill_switch_active !== false;
+    if (isSandboxed) {
+      gasBadge.className = "px-2 py-0.5 rounded text-[10px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40";
+      gasBadge.textContent = "沙盒特训·免Gas";
+      gasBadge.title = "物理级安全锁生效中：全仿真真实深度试跑，0 真实资金消耗，无需充值 POL Gas。";
+    } else if (cf.gas_ok === false) {
       gasBadge.className = "px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40 animate-pulse";
       gasBadge.textContent = "Gas不足需充";
+      gasBadge.title = "实盘模式下签名钱包 POL 余额低于 0.1，请向钱包充值少量 POL。";
     } else {
       gasBadge.className = "px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40";
       gasBadge.textContent = "Gas充沛";
+      gasBadge.title = "实盘签名 Gas 燃料充足。";
     }
 
     // 当期 2H 资金

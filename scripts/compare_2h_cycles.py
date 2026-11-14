@@ -1,22 +1,41 @@
 import json
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 
 rounds = []
 with open('data/crypto_5m_paper_rounds.jsonl', 'r', encoding='utf-8') as f:
     for line in f:
         if line.strip():
-            rounds.append(json.loads(line))
+            try:
+                rounds.append(json.loads(line))
+            except Exception:
+                pass
 
-t_v34 = '2026-11-13T18:54:01'
-t_v33 = '2026-11-13T17:29:11'
+now = time.time()
+t_now_dt = datetime.fromtimestamp(now, tz=timezone.utc)
+t_2h_ago_dt = datetime.fromtimestamp(now - 7200.0, tz=timezone.utc)
+t_4h_ago_dt = datetime.fromtimestamp(now - 14400.0, tz=timezone.utc)
 
-v33_rounds = [r for r in rounds if t_v33 <= r.get('ts', '') < t_v34]
-v34_rounds = [r for r in rounds if r.get('ts', '') >= t_v34]
+curr_rounds = []
+prev_rounds = []
+
+for r in rounds:
+    ts_str = r.get('ts')
+    if not ts_str:
+        continue
+    try:
+        dt = datetime.fromisoformat(ts_str)
+        if dt >= t_2h_ago_dt:
+            curr_rounds.append(r)
+        elif t_4h_ago_dt <= dt < t_2h_ago_dt:
+            prev_rounds.append(r)
+    except Exception:
+        pass
 
 def analyze(rset, name):
     n = len(rset)
     if n == 0:
-        print(f"=== {name}: 0 rounds ===")
+        print(f"=== {name}: 0 轮数据 ===")
         return
     wins = sum(1 for r in rset if r.get('realized_pnl_usd', 0) > 0)
     total_pnl = sum(r.get('realized_pnl_usd', 0) for r in rset)
@@ -43,6 +62,6 @@ def analyze(rset, name):
         cn = stats['n']
         print(f"  - {c.upper():4}: {stats['wins']}/{cn} 胜 ({stats['wins']/cn*100:.1f}%) | 盈亏: {stats['pnl']:+.4f}U | 配对: {stats['paired']}/{cn} ({stats['paired']/cn*100:.1f}%) | 投入: ${stats['cost']:.2f}")
 
-analyze(v33_rounds, "上期 (v3.3 紧急穿盘救险初期 · 17:29~18:54 UTC)")
+analyze(prev_rounds, f"上期 2小时周期 ({t_4h_ago_dt.strftime('%H:%M')} ~ {t_2h_ago_dt.strftime('%H:%M')} UTC)")
 print()
-analyze(v34_rounds, "当期 (v3.4 破除对冲死锁+SOL高波收窄+30U现金硬顶 · 18:54~20:32 UTC)")
+analyze(curr_rounds, f"当期 2小时周期 ({t_2h_ago_dt.strftime('%H:%M')} ~ {t_now_dt.strftime('%H:%M')} UTC)")
