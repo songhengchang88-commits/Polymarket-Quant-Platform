@@ -62,12 +62,17 @@ def analyze(rset, name):
         if r.get('paired_shares', 0) > 0:
             by_coin[c]['paired'] += 1
     
+    total_turnover = sum(r.get('total_cost_usd', 0) for r in rset)
+    max_round_cost = max((r.get('total_cost_usd', 0) for r in rset), default=0.0)
+    velocity = total_turnover / 30.0  # 基于 30U 初始本金的周转倍数
+
     print(f"=== {name} (共 {n} 轮) ===")
     print(f"胜率: {wins}/{n} ({wins/n*100:.1f}%) | 净盈亏: {total_pnl:+.4f}U")
     print(f"配对达成率: {paired_cnt}/{n} ({paired_cnt/n*100:.1f}%) | 单边暴露: {unpaired_cnt}/{n} ({unpaired_cnt/n*100:.1f}%)")
+    print(f"交易成交流水 (Turnover): ${total_turnover:.2f} (30U本金循环周转 {velocity:.1f} 次) | 单轮最高资金占用: ${max_round_cost:.2f}")
     for c, stats in by_coin.items():
         cn = stats['n']
-        print(f"  - {c.upper():4}: {stats['wins']}/{cn} 胜 ({stats['wins']/cn*100:.1f}%) | 盈亏: {stats['pnl']:+.4f}U | 配对: {stats['paired']}/{cn} ({stats['paired']/cn*100:.1f}%) | 投入: ${stats['cost']:.2f}")
+        print(f"  - {c.upper():4}: {stats['wins']}/{cn} 胜 ({stats['wins']/cn*100:.1f}%) | 盈亏: {stats['pnl']:+.4f}U | 配对: {stats['paired']}/{cn} ({stats['paired']/cn*100:.1f}%) | 周转流水: ${stats['cost']:.2f}")
 
 analyze(prev_rounds, f"上期 2小时周期 ({t_4h_ago_bj.strftime('%H:%M')} ~ {t_2h_ago_bj.strftime('%H:%M')} 北京时间)")
 print()
