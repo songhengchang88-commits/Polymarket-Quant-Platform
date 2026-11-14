@@ -1,28 +1,28 @@
 {
   "schema_version": 1,
-  "updated_at_utc": "2026-11-14T08:09:35Z",
-  "updated_at_cst": "2026-11-14T16:09:35+08:00",
+  "updated_at_utc": "2026-11-14T08:59:59Z",
+  "updated_at_cst": "2026-11-14T16:59:59+08:00",
   "gate": "A",
   "mode": "paper",
   "seed_usd": 200.0,
   "halt_line_usd": 140.0,
-  "round": 280,
-  "nav_usd": 204.1652,
-  "nav_console_usd": 204.1652,
+  "round": 580,
+  "nav_usd": 204.336315,
+  "nav_console_usd": 204.336315,
   "nav_diff_usd": 0.0,
   "cash_usd": 81.74214,
-  "positions_usd": 122.42306,
+  "positions_usd": 122.594175,
   "positions_tokens": 34,
   "positions_at_mid": 32,
   "positions_at_cost": 2,
   "day_start_usd": 204.227555,
-  "day_pnl_usd": -0.062355,
+  "day_pnl_usd": 0.10876,
   "peak_usd": 205.435492,
   "circuit": "NORMAL",
   "halted_reason": null,
   "fills_count": 102,
   "orders": {
-    "cancelled": 1075834,
+    "cancelled": 1077634,
     "filled": 90,
     "open": 6,
     "partially_filled_cancelled": 11
@@ -452,6 +452,14 @@
       "valued_by": "mid"
     },
     {
+      "market_id": "666661",
+      "outcome": null,
+      "shares": 10.0,
+      "mid_usd": 0.0865,
+      "value_usd": 0.865,
+      "valued_by": "mid"
+    },
+    {
       "market_id": "1321561",
       "outcome": null,
       "shares": 10.0,
@@ -460,19 +468,11 @@
       "valued_by": "mid"
     },
     {
-      "market_id": "666661",
-      "outcome": null,
-      "shares": 10.0,
-      "mid_usd": 0.0675,
-      "value_usd": 0.675,
-      "valued_by": "mid"
-    },
-    {
       "market_id": "5714365",
       "outcome": null,
       "shares": 10.0,
-      "mid_usd": 0.0585,
-      "value_usd": 0.585,
+      "mid_usd": 0.057,
+      "value_usd": 0.57,
       "valued_by": "mid"
     },
     {
@@ -535,8 +535,8 @@
       "market_id": "5339986",
       "outcome": null,
       "shares": 3.885,
-      "mid_usd": 0.018,
-      "value_usd": 0.06993,
+      "mid_usd": 0.017,
+      "value_usd": 0.066045,
       "valued_by": "mid"
     },
     {
