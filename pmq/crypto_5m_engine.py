@@ -510,6 +510,11 @@ class Crypto5mEngine:
         unpaired_up = round(max(0.0, inv.up_shares - inv.down_shares), 2)
         unpaired_dn = round(max(0.0, inv.down_shares - inv.up_shares), 2)
 
+        # 铁律 1: 防贪吃蛇拉扯失衡 (Anti-Whipsaw Parity Lock)
+        # 只要双边基础仓位均已建立 (配对份额 >= 2.0)，绝对禁止在同一盘口内继续追加对冲单或试探单！
+        if min(inv.up_shares, inv.down_shares) >= 2.0:
+            return orders
+
         def _add_order(side: str, target_price: float, tag: str, fixed_shares: Optional[float] = None, budget_scale: float = 1.0):
             p = round(min(0.96, max(0.02, target_price)), 2)
             if p in used_prices[side]:
@@ -599,15 +604,26 @@ class Crypto5mEngine:
         if (inv.up_cost + inv.down_cost) >= self.budget_per_order_usd * 2.0:
             return orders
 
+        # 铁律 2: 跨币种宏观同向共振阻断 (Anti-Systemic Correlation Lock)
+        # 统计其他活跃币种在当前 5 分钟轮次的单边敞口方向，彻底杜绝三币同时开同方向被一网打尽！
+        other_open_sides = set()
+        for o_inv in self.inventories.values():
+            if o_inv.coin != inv.coin and o_inv.base_ts == inv.base_ts:
+                if (o_inv.up_shares - o_inv.down_shares) > 1.0:
+                    other_open_sides.add("UP")
+                elif (o_inv.down_shares - o_inv.up_shares) > 1.0:
+                    other_open_sides.add("DOWN")
+
         # 仅在稳健平衡区挂轻仓折价试探 (结合 OFI 微观动量防单边逆向接飞刀)
         # 高波动币种 (SOL) 收窄开仓平衡带至 [0.42 ~ 0.58]，折价加深至 5.0¢ 提高安全垫
         eq_low = 0.42 if inv.coin == "sol" else 0.38
         eq_high = 0.58 if inv.coin == "sol" else 0.62
         discount_cents = 0.050 if inv.coin == "sol" else 0.040
 
-        if eq_low <= fair_up <= eq_high and ofi_up >= -0.15:
+        # 若已有其他币种单边持 UP，禁止本币种再开 UP 试探；若已有其他币种持 DOWN，禁止本币种再开 DOWN 试探！
+        if "UP" not in other_open_sides and eq_low <= fair_up <= eq_high and ofi_up >= -0.15:
             _add_order("UP", fair_up - discount_cents, "discount", budget_scale=0.65)
-        if eq_low <= fair_dn <= eq_high and ofi_up <= 0.15:
+        if "DOWN" not in other_open_sides and eq_low <= fair_dn <= eq_high and ofi_up <= 0.15:
             _add_order("DOWN", fair_dn - discount_cents, "discount", budget_scale=0.65)
 
         return orders
