@@ -219,6 +219,8 @@ class Crypto5mEngine:
         self.cycle_max_dd: float = 0.0
         self.cycle_index: int = 1
         self._last_live_funds_ts: float = 0.0
+        self._missing_market_cache: Dict[str, float] = {}
+        self._start_funds_poller()
 
         self.ws_spot = BinanceSpotWS(self.coins)
         self._http = requests.Session()
@@ -352,7 +354,6 @@ class Crypto5mEngine:
                     ticker_urls = [
                         f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={coin.upper()}USDT",
                         f"https://api.binance.com/api/v3/ticker/bookTicker?symbol={symbol}",
-                        f"https://api.binance.us/api/v3/ticker/bookTicker?symbol={symbol}",
                     ]
                     for u in ticker_urls:
                         try:
@@ -378,32 +379,34 @@ class Crypto5mEngine:
                 st = cached[1]
                 return SpotState(symbol=symbol, spot=spot, strike_k=st.strike_k, vol_1m=st.vol_1m, ts=now)
 
-            # 2. 多源容灾获取 1m K 线 (Binance Vision -> Binance US -> OKX)
+            # 2. 极速获取 1m K 线 (OKX 亚秒首发 -> Bybit -> Binance)
             klines = None
-            kline_urls = [
-                f"https://data-api.binance.vision/api/v3/klines?symbol={symbol}&interval=1m&limit=16",
-                f"https://api.binance.us/api/v3/klines?symbol={symbol}&interval=1m&limit=16",
-            ]
-            for ku in kline_urls:
+            try:
+                res = self._http.get(f"https://www.okx.com/api/v5/market/candles?instId={coin.upper()}-USDT&bar=1m&limit=16", timeout=1.5)
+                if res.status_code == 200:
+                    raw_okx = res.json().get("data", [])
+                    if raw_okx:
+                        klines = sorted(raw_okx, key=lambda x: int(x[0]))
+            except Exception:
+                pass
+
+            if not klines:
                 try:
-                    res = self._http.get(ku, timeout=3.0)
+                    res = self._http.get(f"https://api.bybit.com/v5/market/kline?category=spot&symbol={coin.upper()}USDT&interval=1&limit=16", timeout=2.0)
                     if res.status_code == 200:
-                        data = res.json()
-                        if isinstance(data, list) and len(data) > 0 and isinstance(data[0], list):
-                            klines = data
-                            break
+                        raw_bybit = res.json().get("result", {}).get("list", [])
+                        if raw_bybit:
+                            klines = sorted(raw_bybit, key=lambda x: int(x[0]))
                 except Exception:
                     pass
 
             if not klines:
-                # OKX 备用 K 线
                 try:
-                    res = self._http.get(f"https://www.okx.com/api/v5/market/candles?instId={coin.upper()}-USDT&bar=1m&limit=16", timeout=3.0)
+                    res = self._http.get(f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1m&limit=16", timeout=2.0)
                     if res.status_code == 200:
-                        raw_okx = res.json().get("data", [])
-                        if raw_okx:
-                            # OKX 倒序排列需逆序
-                            klines = sorted(raw_okx, key=lambda x: int(x[0]))
+                        data = res.json()
+                        if isinstance(data, list) and len(data) > 0 and isinstance(data[0], list):
+                            klines = data
                 except Exception:
                     pass
 
@@ -431,19 +434,22 @@ class Crypto5mEngine:
 
     def fetch_5m_market(self, coin: str, base_ts: int) -> Optional[Tuple[str, str]]:
         slug = f"{coin}-updown-5m-{base_ts}"
-        for attempt in range(2):
-            try:
-                r = self._http.get(f"https://gamma-api.polymarket.com/events?slug={slug}", timeout=5.0)
-                data = r.json()
-                if not data or not data[0].get("markets"):
-                    return None
-                m = data[0]["markets"][0]
-                tokens = json.loads(m["clobTokenIds"]) if isinstance(m["clobTokenIds"], str) else m["clobTokenIds"]
-                if len(tokens) >= 2:
-                    return str(tokens[0]), str(tokens[1])
-            except Exception:
-                if attempt == 0:
-                    time.sleep(0.5)
+        now = time.time()
+        if now < self._missing_market_cache.get(slug, 0.0):
+            return None
+
+        try:
+            r = self._http.get(f"https://gamma-api.polymarket.com/events?slug={slug}", timeout=2.5)
+            data = r.json()
+            if not data or not data[0].get("markets"):
+                self._missing_market_cache[slug] = now + 12.0
+                return None
+            m = data[0]["markets"][0]
+            tokens = json.loads(m["clobTokenIds"]) if isinstance(m["clobTokenIds"], str) else m["clobTokenIds"]
+            if len(tokens) >= 2:
+                return str(tokens[0]), str(tokens[1])
+        except Exception:
+            self._missing_market_cache[slug] = now + 8.0
         return None
 
     def fetch_clob_book(self, token_id: str) -> Tuple[List[Tuple[float, float]], List[Tuple[float, float]]]:
@@ -1067,46 +1073,50 @@ class Crypto5mEngine:
                 still_pending.append((unlock_ts, payout, slug))
         self.pending_settlements = still_pending
 
+    def _start_funds_poller(self):
+        def _poller_worker():
+            rpcs = [
+                "https://polygon-bor-rpc.publicnode.com",
+                "https://polygon.drpc.org",
+                "https://1rpc.io/matic",
+            ]
+            proxy = os.getenv("FUNDER_ADDRESS", "0x735e49143B19989E8c2BE88EdE72e96c1d0500dc")
+            wallet = os.getenv("WALLET_ADDRESS", "0x514f13a326a93aeda4522b973707e8602c2bcefd")
+            pusd = "0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb"
+            data_pusd = "0x70a08231000000000000000000000000" + proxy[2:].lower()
+            http_sess = requests.Session()
+            while True:
+                for rpc in rpcs:
+                    try:
+                        res_pusd = http_sess.post(rpc, json={"jsonrpc": "2.0", "id": 1, "method": "eth_call", "params": [{"to": pusd, "data": data_pusd}, "latest"]}, timeout=2.5).json()
+                        if "result" not in res_pusd:
+                            continue
+                        val_pusd = int(res_pusd["result"], 16) / 1e6
+
+                        res_pol = http_sess.post(rpc, json={"jsonrpc": "2.0", "id": 2, "method": "eth_getBalance", "params": [wallet, "latest"]}, timeout=2.5).json()
+                        if "result" not in res_pol:
+                            continue
+                        val_pol = int(res_pol["result"], 16) / 1e18
+
+                        self._last_live_funds = {
+                            "proxy_pusd": round(val_pusd, 2),
+                            "wallet_pol": round(val_pol, 4),
+                            "wallet_addr": wallet,
+                            "proxy_addr": proxy,
+                            "gas_ok": val_pol >= 0.5,
+                        }
+                        break
+                    except Exception:
+                        continue
+                time.sleep(30.0)
+
+        t = threading.Thread(target=_poller_worker, daemon=True, name="FundsPoller")
+        t.start()
+
     def _fetch_live_chain_funds(self) -> dict:
-        now = time.time()
-        if (now - self._last_live_funds_ts) < 10.0 and self._last_live_funds:
-            return self._last_live_funds
-
-        rpcs = [
-            "https://polygon-bor-rpc.publicnode.com",
-            "https://polygon.drpc.org",
-            "https://1rpc.io/matic",
-        ]
-        proxy = os.getenv("FUNDER_ADDRESS", "0x735e49143B19989E8c2BE88EdE72e96c1d0500dc")
-        wallet = os.getenv("WALLET_ADDRESS", "0x514f13a326a93aeda4522b973707e8602c2bcefd")
-        pusd = "0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb"
-        data_pusd = "0x70a08231000000000000000000000000" + proxy[2:].lower()
-
-        for rpc in rpcs:
-            try:
-                res_pusd = self._http.post(rpc, json={"jsonrpc": "2.0", "id": 1, "method": "eth_call", "params": [{"to": pusd, "data": data_pusd}, "latest"]}, timeout=3.0).json()
-                if "result" not in res_pusd:
-                    continue
-                val_pusd = int(res_pusd["result"], 16) / 1e6
-
-                res_pol = self._http.post(rpc, json={"jsonrpc": "2.0", "id": 2, "method": "eth_getBalance", "params": [wallet, "latest"]}, timeout=3.0).json()
-                if "result" not in res_pol:
-                    continue
-                val_pol = int(res_pol["result"], 16) / 1e18
-
-                self._last_live_funds = {
-                    "proxy_pusd": round(val_pusd, 2),
-                    "wallet_pol": round(val_pol, 4),
-                    "wallet_addr": wallet,
-                    "proxy_addr": proxy,
-                    "gas_ok": val_pol >= 0.5,
-                }
-                self._last_live_funds_ts = now
-                return self._last_live_funds
-            except Exception:
-                continue
-
         if not self._last_live_funds:
+            wallet = os.getenv("WALLET_ADDRESS", "0x514f13a326a93aeda4522b973707e8602c2bcefd")
+            proxy = os.getenv("FUNDER_ADDRESS", "0x735e49143B19989E8c2BE88EdE72e96c1d0500dc")
             self._last_live_funds = {
                 "proxy_pusd": 1.72,
                 "wallet_pol": 3.6214,
