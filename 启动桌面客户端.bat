@@ -2,8 +2,8 @@
 chcp 65001 >nul
 cd /d "%~dp0"
 echo ========================================================
-echo   PolyArbitrage Pro - Polymarket CLOB V2 原生桌面终端
+echo   Polymarket 5分钟加密做市量化实战指挥舰 v3.6
 echo ========================================================
-echo 正在启动独立量化客户端窗口...
-start "" pythonw app_desktop.py
+echo 正在启动彭博三币实战看板与控制台...
+call start_platform.bat
 exit
