@@ -1,6 +1,9 @@
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+
+# 统一采用北京时间 (UTC+8) 显示
+BEIJING_TZ = timezone(timedelta(hours=8))
 
 rounds = []
 with open('data/crypto_5m_paper_rounds.jsonl', 'r', encoding='utf-8') as f:
@@ -12,9 +15,13 @@ with open('data/crypto_5m_paper_rounds.jsonl', 'r', encoding='utf-8') as f:
                 pass
 
 now = time.time()
-t_now_dt = datetime.fromtimestamp(now, tz=timezone.utc)
-t_2h_ago_dt = datetime.fromtimestamp(now - 7200.0, tz=timezone.utc)
-t_4h_ago_dt = datetime.fromtimestamp(now - 14400.0, tz=timezone.utc)
+t_now_utc = datetime.fromtimestamp(now, tz=timezone.utc)
+t_2h_ago_utc = datetime.fromtimestamp(now - 7200.0, tz=timezone.utc)
+t_4h_ago_utc = datetime.fromtimestamp(now - 14400.0, tz=timezone.utc)
+
+t_now_bj = t_now_utc.astimezone(BEIJING_TZ)
+t_2h_ago_bj = t_2h_ago_utc.astimezone(BEIJING_TZ)
+t_4h_ago_bj = t_4h_ago_utc.astimezone(BEIJING_TZ)
 
 curr_rounds = []
 prev_rounds = []
@@ -25,9 +32,9 @@ for r in rounds:
         continue
     try:
         dt = datetime.fromisoformat(ts_str)
-        if dt >= t_2h_ago_dt:
+        if dt >= t_2h_ago_utc:
             curr_rounds.append(r)
-        elif t_4h_ago_dt <= dt < t_2h_ago_dt:
+        elif t_4h_ago_utc <= dt < t_2h_ago_utc:
             prev_rounds.append(r)
     except Exception:
         pass
@@ -62,6 +69,6 @@ def analyze(rset, name):
         cn = stats['n']
         print(f"  - {c.upper():4}: {stats['wins']}/{cn} 胜 ({stats['wins']/cn*100:.1f}%) | 盈亏: {stats['pnl']:+.4f}U | 配对: {stats['paired']}/{cn} ({stats['paired']/cn*100:.1f}%) | 投入: ${stats['cost']:.2f}")
 
-analyze(prev_rounds, f"上期 2小时周期 ({t_4h_ago_dt.strftime('%H:%M')} ~ {t_2h_ago_dt.strftime('%H:%M')} UTC)")
+analyze(prev_rounds, f"上期 2小时周期 ({t_4h_ago_bj.strftime('%H:%M')} ~ {t_2h_ago_bj.strftime('%H:%M')} 北京时间)")
 print()
-analyze(curr_rounds, f"当期 2小时周期 ({t_2h_ago_dt.strftime('%H:%M')} ~ {t_now_dt.strftime('%H:%M')} UTC)")
+analyze(curr_rounds, f"当期 2小时周期 ({t_2h_ago_bj.strftime('%H:%M')} ~ {t_now_bj.strftime('%H:%M')} 北京时间)")
