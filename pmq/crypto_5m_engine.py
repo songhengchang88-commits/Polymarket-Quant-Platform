@@ -85,7 +85,11 @@ class BinanceSpotWS:
         return None
 
     def _run_forever(self):
-        asyncio.run(self._ws_loop())
+        while not self._stop:
+            try:
+                asyncio.run(self._ws_loop())
+            except Exception:
+                time.sleep(2.0)
 
     async def _ws_loop(self):
         streams = "/".join(f"{COINS[c].lower()}@bookTicker" for c in self.coins if c in COINS)
@@ -333,32 +337,36 @@ class Crypto5mEngine:
             # 1. 优先毫秒级读取 Binance WebSocket 内存最新价
             spot = self.ws_spot.get_price(coin)
             if spot is None:
-                ticker_urls = [
-                    f"https://data-api.binance.vision/api/v3/ticker/bookTicker?symbol={symbol}",
-                    f"https://api.binance.us/api/v3/ticker/bookTicker?symbol={symbol}",
-                    f"https://api.binance.com/api/v3/ticker/bookTicker?symbol={symbol}",
-                ]
-                for u in ticker_urls:
-                    try:
-                        res = self._http.get(u, timeout=2.5)
-                        if res.status_code == 200:
-                            t = res.json()
-                            if isinstance(t, dict) and "bidPrice" in t:
-                                spot = (float(t["bidPrice"]) + float(t["askPrice"])) / 2.0
-                                break
-                    except Exception:
-                        pass
+                # 1. 优先使用亚毫秒级 Keep-Alive 的 OKX REST 高频行情报盘 (<800ms)
+                try:
+                    res = self._http.get(f"https://www.okx.com/api/v5/market/ticker?instId={coin.upper()}-USDT", timeout=2.0)
+                    if res.status_code == 200:
+                        d = res.json().get("data", [])
+                        if d and "last" in d[0]:
+                            spot = float(d[0]["last"])
+                except Exception:
+                    pass
 
-                # 备用容灾: OKX
+                # 2. 备用容灾: Bybit & Binance
                 if spot is None:
-                    try:
-                        res = self._http.get(f"https://www.okx.com/api/v5/market/ticker?instId={coin.upper()}-USDT", timeout=2.5)
-                        if res.status_code == 200:
-                            d = res.json().get("data", [])
-                            if d and "last" in d[0]:
-                                spot = float(d[0]["last"])
-                    except Exception:
-                        pass
+                    ticker_urls = [
+                        f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={coin.upper()}USDT",
+                        f"https://api.binance.com/api/v3/ticker/bookTicker?symbol={symbol}",
+                        f"https://api.binance.us/api/v3/ticker/bookTicker?symbol={symbol}",
+                    ]
+                    for u in ticker_urls:
+                        try:
+                            res = self._http.get(u, timeout=2.5)
+                            if res.status_code == 200:
+                                t = res.json()
+                                if isinstance(t, dict) and "result" in t and "list" in t["result"] and t["result"]["list"]:
+                                    spot = float(t["result"]["list"][0]["lastPrice"])
+                                    break
+                                elif isinstance(t, dict) and "bidPrice" in t:
+                                    spot = (float(t["bidPrice"]) + float(t["askPrice"])) / 2.0
+                                    break
+                        except Exception:
+                            pass
 
             if spot is None:
                 return None
@@ -423,17 +431,19 @@ class Crypto5mEngine:
 
     def fetch_5m_market(self, coin: str, base_ts: int) -> Optional[Tuple[str, str]]:
         slug = f"{coin}-updown-5m-{base_ts}"
-        try:
-            r = self._http.get(f"https://gamma-api.polymarket.com/events?slug={slug}", timeout=4)
-            data = r.json()
-            if not data or not data[0].get("markets"):
-                return None
-            m = data[0]["markets"][0]
-            tokens = json.loads(m["clobTokenIds"]) if isinstance(m["clobTokenIds"], str) else m["clobTokenIds"]
-            if len(tokens) >= 2:
-                return str(tokens[0]), str(tokens[1])
-        except Exception:
-            pass
+        for attempt in range(2):
+            try:
+                r = self._http.get(f"https://gamma-api.polymarket.com/events?slug={slug}", timeout=5.0)
+                data = r.json()
+                if not data or not data[0].get("markets"):
+                    return None
+                m = data[0]["markets"][0]
+                tokens = json.loads(m["clobTokenIds"]) if isinstance(m["clobTokenIds"], str) else m["clobTokenIds"]
+                if len(tokens) >= 2:
+                    return str(tokens[0]), str(tokens[1])
+            except Exception:
+                if attempt == 0:
+                    time.sleep(0.5)
         return None
 
     def fetch_clob_book(self, token_id: str) -> Tuple[List[Tuple[float, float]], List[Tuple[float, float]]]:
