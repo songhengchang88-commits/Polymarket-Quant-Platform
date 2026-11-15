@@ -276,3 +276,25 @@ def test_precision_cutoff_preserves_hedge():
     assert len(inv.open_orders) == 1
     assert inv.open_orders[0].tag == 'hedge'
 
+
+def test_v39_active_taker_flush_at_best_ask():
+    """验证 v3.9 主动吃单引擎: 中期 (rem_sec <= 110s) 持有未配对单边时，直接对齐卖一主动吃单，消除裸奔"""
+    from pmq.crypto_5m_engine import Crypto5mEngine, MarketInventory
+    engine = Crypto5mEngine(coins=['eth'], initial_paper_capital=30.0, persist_ledger=False)
+    inv = MarketInventory(slug='eth-test', coin='eth', base_ts=1000, strike_k=2000.0, token_up='u', token_down='d')
+    inv.up_shares = 3.0
+    inv.up_cost = 1.50   # avg_up_cost = 0.50
+
+    # 中期 85s (<= 110s): target_cap=1.00 -> max_hedge_dn = 0.50.
+    # 真实盘口卖一 best_ask_dn 为 0.49 (处于 0.50 限额内)
+    orders = engine.build_safe_grid(
+        fair_up=0.50, fair_dn=0.50, inv=inv, rem_sec=85.0, best_ask_dn=0.49
+    )
+    assert len(orders) == 1
+    assert orders[0].side == "DOWN"
+    assert orders[0].tag == "hedge"
+    # 关键断言: 价格直接命中卖一 0.49 主动吃单，绝非被动挂 0.485 排队等死！
+    assert orders[0].price == 0.49
+    assert orders[0].shares == 3.0
+
+

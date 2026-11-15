@@ -495,14 +495,20 @@ class Crypto5mEngine:
         ofi_up: float = 0.0,
         macro_storm_active: bool = False,
         spot: float = 0.0,
+        best_ask_up: Optional[float] = None,
+        best_ask_dn: Optional[float] = None,
     ) -> List[GridOrder]:
         """
-        防接飞刀 + 单边硬锁 + 宏观风暴熔断 + 阶梯动态滑窗 (v2.9):
-        1. 若已有未配对净持仓 (unpaired > 0.1 份)，严禁同侧加仓，挂 1:1 对冲 (阶梯滑窗 + 漂移平价)。
-        2. 只要本轮已完成过一次配对 (paired_shares > 0.1)，立即锁仓等结算，禁止再开第二轮新仓！
-        3. 宏观联动风暴熔断: 若全市场正在发生大单边共振暴跌 (macro_storm_active=True)，强行禁止任何新开仓！
-        4. 尾盘 <= 120s 或盘口极端失衡 (|OFI| > 0.70) 时禁止新开单边。
-        5. 分式凯利轻试探: 初始折价开仓只用 65% 单笔预算 (~$1.95U)，仅在稳健中枢 [0.38 ~ 0.62] 挂单。
+        构建自适应安全做市与动态对冲网格 (v3.9 跨度阶梯自适应主动吃单引擎):
+        防接飞刀 + 单边硬锁 + 宏观风暴熔断 + 阶梯动态滑窗:
+        1. 若已有未配对净持仓 (unpaired > 0.1 份)，严禁同侧加仓，挂 1:1 对冲。
+        2. v3.9 主动吃单引擎 (Active Taker Flush):
+           - 前期 (>110s): 优先被动挂单赚取做市超额利润 (目标总成本 <= 0.96)；
+           - 中期 (60s ~ 110s): 保本平价主动撮合 (Breakeven Parity Lock)，直接对齐卖一主动吃单，目标总成本 <= 1.00；
+           - 紧急期 (15s ~ 60s): 救险吃单上限放宽至 1.05~1.25，彻底杜绝单边持仓被带入尾盘硬锁与到期归零！
+        3. 只要本轮已完成过一次配对 (paired_shares > 0.1)，立即锁仓等结算，禁止再开第二轮新仓！
+        4. 宏观联动风暴熔断: 若全市场正在发生大单边共振暴跌 (macro_storm_active=True)，强行禁止任何新开仓！
+        5. 跨币种同向共振阻断器 (Anti-Systemic Correlation Lock): 杜绝三币同向开仓。
         """
         orders: List[GridOrder] = []
         used_prices = {"UP": set(), "DOWN": set()}
@@ -537,7 +543,7 @@ class Crypto5mEngine:
             if cur_side_cost + cost > self.max_exposure_per_market_usd:
                 return
 
-            # 隐患消除 2: 对冲专属储备金硬隔离 (Hedge Reserve Enclave)
+            # 对冲专属储备金硬隔离 (Hedge Reserve Enclave)
             # 开仓试探单 (discount) 最多动用现金的 45%，剩余 55% 强制隔离保留为对冲专属流动性，杜绝资金死锁！
             available_cash = self.paper_cash_usd if tag == "hedge" else (self.paper_cash_usd * 0.45)
             if cost > available_cash:
@@ -550,52 +556,64 @@ class Crypto5mEngine:
         # 真实大幅破位判定: 现货偏离基准 K 超过 0.15% (ETH > $3, BTC > $100)，或时间进入尾盘 60s
         is_genuine_breakout = (drift_pct > 0.0015 or rem_sec <= 60.0)
 
-        # 情况 A: 当前持有未配对 UP 敞口 -> 死锁 UP 开仓，挂 1:1 对冲 (时间衰减 + 现货漂移联合动态滑窗)
+        # 情况 A: 当前持有未配对 UP 敞口 -> 强制锁死 UP，专心 1:1 对冲锁定
         if unpaired_up > 0.1:
-            # 1. 救险穿盘对冲 (Emergency Taker Hedge): 仅在真实破位或尾盘 45s 时启动上限 1.25，避免中盘布朗微观噪音洗盘误追高！
+            # 1. 救险穿盘对冲 (尾盘 <= 45s 或 真实大幅破位): 启动上限 1.25，紧急扫盘
             if (fair_up < 0.22 and is_genuine_breakout) or rem_sec <= 45.0:
                 target_cap = 1.25
             elif fair_up < 0.35 and rem_sec > 60.0:
                 target_cap = 1.00   # 现货快速下杀破位，提前平价保本锁死对冲
-            elif rem_sec > 150.0:
-                target_cap = 0.94   # 前期超额锁利 (保底留6¢净利垫)
-            elif rem_sec > 90.0:
-                target_cap = 0.97   # 中期标准锁利 (保底留3¢净利垫)
+            elif rem_sec > 110.0:
+                target_cap = 0.96   # 前期超额锁利 (保底留4¢净利空间)
             elif rem_sec > 60.0:
-                target_cap = 1.00   # 临近尾盘保本对冲 (平价锁死配对，零亏损)
+                target_cap = 1.00   # 中期保本对冲 (平价锁死配对，零亏损)
             else:
-                target_cap = 1.15
+                target_cap = 1.05   # 临近尾盘微摩擦锁死 (最多容忍 0.05 摩擦，彻底杜绝单边裸奔)
 
-            max_hedge_dn = min(0.96, target_cap - inv.avg_up_cost)
-            if fair_up >= 0.25 and rem_sec > 45.0:
-                max_hedge_dn = min(max_hedge_dn, fair_dn - 0.015)
+            max_hedge_dn = round(min(0.96, target_cap - inv.avg_up_cost), 2)
 
-            if max_hedge_dn >= 0.03:
-                _add_order("DOWN", max_hedge_dn, "hedge", fixed_shares=unpaired_up)
+            # v3.9 智能主动吃单机制 (Active Taker Flush):
+            # 如果盘口有现成卖单 (best_ask_dn)，且价格在目标上限 target_cap 内，
+            # 在 rem_sec <= 110s (时间过半) 时直接以 best_ask_dn 主动吃单，绝不被动排队等死！
+            hedge_price = max_hedge_dn
+            if best_ask_dn is not None and best_ask_dn <= max_hedge_dn:
+                if rem_sec <= 110.0:
+                    hedge_price = best_ask_dn
+                elif fair_up >= 0.25:
+                    hedge_price = min(max_hedge_dn, max(best_ask_dn, fair_dn - 0.01))
+            elif fair_up >= 0.25 and rem_sec > 110.0:
+                hedge_price = min(max_hedge_dn, fair_dn - 0.015)
+
+            if hedge_price >= 0.03:
+                _add_order("DOWN", hedge_price, "hedge", fixed_shares=unpaired_up)
             return orders
 
-        # 情况 B: 当前持有未配对 DOWN 敞口 -> 死锁 DOWN 开仓，挂 1:1 对冲 (时间衰减 + 现货漂移联合动态滑窗)
+        # 情况 B: 当前持有未配对 DOWN 敞口 -> 强制锁死 DOWN，专心 1:1 对冲锁定
         if unpaired_dn > 0.1:
-            # 1. 救险穿盘对冲 (Emergency Taker Hedge): 仅在真实破位或尾盘 45s 时启动上限 1.25
             if (fair_dn < 0.22 and is_genuine_breakout) or rem_sec <= 45.0:
                 target_cap = 1.25
             elif fair_dn < 0.35 and rem_sec > 60.0:
-                target_cap = 1.00   # 现货快速拉升破位，提前平价保本锁死对冲
-            elif rem_sec > 150.0:
-                target_cap = 0.94   # 前期超额锁利 (保底留6¢净利垫)
-            elif rem_sec > 90.0:
-                target_cap = 0.97   # 中期标准锁利 (保底留3¢净利垫)
+                target_cap = 1.00
+            elif rem_sec > 110.0:
+                target_cap = 0.96
             elif rem_sec > 60.0:
-                target_cap = 1.00   # 临近尾盘保本对冲 (平价锁死配对，零亏损)
+                target_cap = 1.00
             else:
-                target_cap = 1.15
+                target_cap = 1.05
 
-            max_hedge_up = min(0.96, target_cap - inv.avg_down_cost)
-            if fair_dn >= 0.25 and rem_sec > 45.0:
-                max_hedge_up = min(max_hedge_up, fair_up - 0.015)
+            max_hedge_up = round(min(0.96, target_cap - inv.avg_down_cost), 2)
 
-            if max_hedge_up >= 0.03:
-                _add_order("UP", max_hedge_up, "hedge", fixed_shares=unpaired_dn)
+            hedge_price = max_hedge_up
+            if best_ask_up is not None and best_ask_up <= max_hedge_up:
+                if rem_sec <= 110.0:
+                    hedge_price = best_ask_up
+                elif fair_dn >= 0.25:
+                    hedge_price = min(max_hedge_up, max(best_ask_up, fair_up - 0.01))
+            elif fair_dn >= 0.25 and rem_sec > 110.0:
+                hedge_price = min(max_hedge_up, fair_up - 0.015)
+
+            if hedge_price >= 0.03:
+                _add_order("UP", hedge_price, "hedge", fixed_shares=unpaired_dn)
             return orders
 
         # 情况 C: 只要已配对过、尾盘 120s 内、盘口极端失衡 (|OFI| > 0.70)、或全市场宏观风暴熔断 (macro_storm_active)，禁止新开仓！
@@ -961,8 +979,18 @@ class Crypto5mEngine:
                 if non_hedge:
                     logger.warning(f"🚨 [风暴毫秒全撤] {coin.upper()} 宏观风暴触发，紧急注销 {len(non_hedge)} 笔被动试探单")
                     inv.open_orders = [o for o in inv.open_orders if o.tag == "hedge"]
+        best_ask_up = asks_up[0][0] if asks_up else None
+        best_ask_dn = asks_dn[0][0] if asks_dn else None
         inv.open_orders = self.build_safe_grid(
-            fair_up, fair_dn, inv, rem_sec=rem_sec, ofi_up=ofi_up, macro_storm_active=macro_storm, spot=spot_st.spot
+            fair_up,
+            fair_dn,
+            inv,
+            rem_sec=rem_sec,
+            ofi_up=ofi_up,
+            macro_storm_active=macro_storm,
+            spot=spot_st.spot,
+            best_ask_up=best_ask_up,
+            best_ask_dn=best_ask_dn,
         )
         grid_desc = ", ".join(f"{o.side}@{o.price:.2f}({o.tag})" for o in inv.open_orders[:4])
 
