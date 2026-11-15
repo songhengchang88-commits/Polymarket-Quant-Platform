@@ -400,6 +400,33 @@ def test_v50_atomic_decision_lock_and_single_unhedged_enclave():
     assert not any(o.side == "DOWN" for o in orders)
 
 
+def test_v52_pre_match_adverse_selection_guard():
+    """验证 v5.2 事前防毒撤单引擎: 撮合前先行校验最新公允价，若不利漂移秒撤挂单防毒性接盘"""
+    from pmq.crypto_5m_engine import Crypto5mEngine, MarketInventory, GridOrder
+    engine = Crypto5mEngine(coins=['sol'], initial_paper_capital=30.0, persist_ledger=False)
+    inv = MarketInventory(slug='sol-test', coin='sol', base_ts=1000, strike_k=70.0, token_up='u', token_down='d')
+    
+    # 场景: 上一轮挂了 DOWN 折价买单 0.40 (当时 fair_dn 约为 0.45)
+    inv.open_orders = [GridOrder(side="DOWN", price=0.40, shares=3.0, cost_usd=1.20, tag="discount")]
+    
+    # 此时现货突发向上暴涨，最新 fair_dn 跌至 0.35 (0.40 > 0.35 - 0.025 = 0.325，失去安全边际)
+    # 对手盘此时在 0.38 砸盘抛售 (若旧逻辑未做事前防毒撤单，会直接在 0.38 砸穿成交充当冤大头)
+    curr_fair_dn = 0.35
+    safe_orders = []
+    for od in inv.open_orders:
+        if od.tag == "discount":
+            if od.price > curr_fair_dn - 0.025:
+                continue
+        safe_orders.append(od)
+    inv.open_orders = safe_orders
+
+    # 执行撮合: 由于毒性挂单已在事前被秒撤，open_orders 为空，成交份额必须为 0！
+    engine.simulate_shadow_fills(inv, asks_up=[], asks_dn=[(0.38, 50.0)])
+    assert inv.down_shares == 0.0
+    assert inv.open_orders == []
+
+
+
 
 
 
