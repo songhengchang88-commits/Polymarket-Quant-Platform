@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-title Polymarket 5分钟量化实战指挥舰 v5.3 (旗舰版)
+title Polymarket 5分钟量化实战指挥舰 v5.4 (旗舰版)
 
 cd /d "E:\Polymarket-Quant-Platform"
 

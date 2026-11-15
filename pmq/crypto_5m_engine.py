@@ -1,5 +1,5 @@
 """
-Polymarket 5 分钟加密量化做市与库存平衡旗舰引擎 v5.3 (满额对冲·断尾止损终极版)
+Polymarket 5 分钟加密量化做市与库存平衡旗舰引擎 v5.4 (终极双闭环·绝杀单边旗舰版)
 ================================================================================
 核心架构特性 (严格贴近实盘真实物理规则，绝不虚构成交与纸面利润):
 1. 标的锁定: BTC / ETH / SOL 彭博三币 5 分钟 Up/Down 二元期权实时盘口。
@@ -656,9 +656,10 @@ class Crypto5mEngine:
         # 仅在稳健平衡区挂轻仓折价试探 (结合 OFI 微观动量防单边逆向接飞刀)
         # v4.2 真空中枢开仓铁律: 全币种统一收紧至 [0.42 ~ 0.58] 紧平衡带，折价加深至 4.5¢
         # 严禁在市场已明显偏离中枢 (如 0.38 vs 0.62) 时逆势摸顶抄底接飞刀！
-        eq_low = 0.42
-        eq_high = 0.58
-        discount_cents = 0.045
+        # v5.4 紧平衡中枢: BTC/SOL 保持 [0.42 ~ 0.58]，ETH 波动率高且盘口薄收窄至 [0.44 ~ 0.56]，折价加深至 5.0¢
+        eq_low = 0.44 if inv.coin == "eth" else 0.42
+        eq_high = 0.56 if inv.coin == "eth" else 0.58
+        discount_cents = 0.050 if inv.coin == "eth" else 0.045
 
         # 若已有其他币种单边持 UP，禁止本币种再开 UP 试探；若已有其他币种持 DOWN，禁止本币种再开 DOWN 试探！
         if "UP" not in other_open_sides and eq_low <= fair_up <= eq_high and ofi_up >= -0.15:
@@ -1035,19 +1036,24 @@ class Crypto5mEngine:
                 best_ask_dn=best_ask_dn,
             )
 
-            # v5.3 尾盘断尾止损救险 (Emergency Unwind Cut-Loss)
-            # 若临近尾盘 (rem_sec <= 40s) 仍有未对冲单边，且反向对冲成本严重倒挂无法成交，
-            # 果断将未对冲敞口以原持仓方向买一价市价抛售回盘口，回收残值现金，彻底杜绝单边 100% 灭顶全损！
-            if rem_sec <= 40.0:
+            # v5.4 终极双闭环保底机制 (Seamless Cut-Loss Citadel)
+            # 若临近尾盘 (rem_sec <= 45s) 仍有未对冲单边 (> 0.2份)，且当前没有正在以卖一价主动扫单成交的对冲单，
+            # 立即检查持仓方向买一价，果断抛售平仓断尾回收现金，绝对不给结算留哪怕一份裸奔单！
+            if rem_sec <= 45.0:
                 cur_unpaired_up = round(max(0.0, inv.up_shares - inv.down_shares), 2)
                 cur_unpaired_dn = round(max(0.0, inv.down_shares - inv.up_shares), 2)
-                if cur_unpaired_up > 0.3 and (best_ask_dn is None or best_ask_dn > 0.80):
+                
+                # 检查当前是否已有可立即主动吃单的对冲单
+                has_active_hedge_up = any(o.side == "UP" and o.tag == "hedge" and best_ask_up and o.price >= best_ask_up for o in inv.open_orders)
+                has_active_hedge_dn = any(o.side == "DOWN" and o.tag == "hedge" and best_ask_dn and o.price >= best_ask_dn for o in inv.open_orders)
+
+                if cur_unpaired_up > 0.2 and not has_active_hedge_dn:
                     best_bid_up = bids_up[0][0] if bids_up else 0.0
-                    if best_bid_up >= 0.05:
+                    if best_bid_up >= 0.03:
                         unwind_shares = cur_unpaired_up
                         rec_cash = round(unwind_shares * best_bid_up, 4)
                         self.paper_cash_usd = round(self.paper_cash_usd + rec_cash, 4)
-                        inv.up_shares = round(inv.up_shares - unwind_shares, 4)
+                        inv.up_shares = round(max(0.0, inv.up_shares - unwind_shares), 4)
                         inv.up_cost = round(max(0.0, inv.up_cost - unwind_shares * (inv.avg_up_cost)), 4)
                         self._append_jsonl(self._trades_path, {
                             "ts": datetime.now(timezone.utc).isoformat(),
@@ -1064,16 +1070,16 @@ class Crypto5mEngine:
                             "paper_cash_left": self.paper_cash_usd,
                         })
                         logger.warning(
-                            f"🛡️ [尾盘断尾止损] {coin.upper()} 无法低成本对冲，以买一价 {best_bid_up:.3f} 抛售平仓 "
+                            f"🛡️ [尾盘断尾止损] {coin.upper()} 无法立即主动对冲，以买一价 {best_bid_up:.3f} 抛售平仓 "
                             f"{unwind_shares:.2f}份 UP，成功回收 ${rec_cash:.2f} 现金！持仓归零杜绝裸奔！"
                         )
-                elif cur_unpaired_dn > 0.3 and (best_ask_up is None or best_ask_up > 0.80):
+                elif cur_unpaired_dn > 0.2 and not has_active_hedge_up:
                     best_bid_dn = bids_dn[0][0] if bids_dn else 0.0
-                    if best_bid_dn >= 0.05:
+                    if best_bid_dn >= 0.03:
                         unwind_shares = cur_unpaired_dn
                         rec_cash = round(unwind_shares * best_bid_dn, 4)
                         self.paper_cash_usd = round(self.paper_cash_usd + rec_cash, 4)
-                        inv.down_shares = round(inv.down_shares - unwind_shares, 4)
+                        inv.down_shares = round(max(0.0, inv.down_shares - unwind_shares), 4)
                         inv.down_cost = round(max(0.0, inv.down_cost - unwind_shares * (inv.avg_down_cost)), 4)
                         self._append_jsonl(self._trades_path, {
                             "ts": datetime.now(timezone.utc).isoformat(),
@@ -1090,7 +1096,7 @@ class Crypto5mEngine:
                             "paper_cash_left": self.paper_cash_usd,
                         })
                         logger.warning(
-                            f"🛡️ [尾盘断尾止损] {coin.upper()} 无法低成本对冲，以买一价 {best_bid_dn:.3f} 抛售平仓 "
+                            f"🛡️ [尾盘断尾止损] {coin.upper()} 无法立即主动对冲，以买一价 {best_bid_dn:.3f} 抛售平仓 "
                             f"{unwind_shares:.2f}份 DOWN，成功回收 ${rec_cash:.2f} 现金！持仓归零杜绝裸奔！"
                         )
         grid_desc = ", ".join(f"{o.side}@{o.price:.2f}({o.tag})" for o in inv.open_orders[:4])
@@ -1322,7 +1328,7 @@ class Crypto5mEngine:
     def run_loop(self, duration_sec: float = 0.0):
         start = time.time()
         logger.info(
-            f"🚀 启动 Crypto 5m 量化做市旗舰引擎 v5.3 (满额对冲·断尾止损终极版) | 初始模拟本金: ${self.initial_paper_capital:.2f} | "
+            f"🚀 启动 Crypto 5m 量化做市旗舰引擎 v5.4 (终极双闭环·绝杀单边旗舰版) | 初始模拟本金: ${self.initial_paper_capital:.2f} | "
             f"单档预算: ${self.budget_per_order_usd:.2f} | 标的: {self.coins} | 账本持久化: {self.persist_ledger}"
         )
         self.ws_spot.start()
