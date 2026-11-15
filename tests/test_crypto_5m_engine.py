@@ -62,8 +62,8 @@ def test_inventory_cross_time_hedge_cap():
     assert all(o.side == "DOWN" for o in orders)
     hedge_orders = [o for o in orders if o.side == "DOWN" and o.tag == "hedge"]
     assert len(hedge_orders) == 1
-    # 0.96 - 0.55 = 0.41 -> 绝不超过 0.41，且份数精确匹配未配对份数 10.0
-    assert hedge_orders[0].price <= 0.41 + 1e-9
+    # v5.5 平价微摩擦对冲上限 1.02 - 0.55 = 0.47 -> 绝不超过 0.47，且份数精确匹配未配对份数 10.0
+    assert hedge_orders[0].price <= 0.47 + 1e-9
     assert hedge_orders[0].shares == pytest.approx(10.0)
 
 
@@ -447,6 +447,35 @@ def test_v53_emergency_unwind_cut_loss():
     assert inv.up_shares == 0.0
     assert rec_cash == pytest.approx(0.77, abs=0.01)
     assert engine.paper_cash_usd > 30.0
+
+
+def test_v55_flash_golden_taker_flush():
+    """验证 v5.5 开盘黄金窗口闪电吃单对冲引擎 (Flash Golden Taker Flush):
+    当持有单边敞口时，只要盘口反向卖一价满足 avg_cost + best_ask <= 1.04，
+    无论处于何种时间阶段，直接以 best_ask 主动吃单锁定配对，绝不低价挂单排队！"""
+    from pmq.crypto_5m_engine import Crypto5mEngine, MarketInventory
+    engine = Crypto5mEngine(coins=['eth'], initial_paper_capital=30.0, persist_ledger=False)
+    inv = MarketInventory(slug='eth-test', coin='eth', base_ts=1000, strike_k=1820.0, token_up='u', token_down='d')
+    inv.up_shares = 3.25
+    inv.up_cost = 1.04  # avg_cost = 0.320
+
+    # 模拟开盘前期 rem_sec = 260s，市场 DOWN 卖一价为 0.69
+    # 双边总成本 0.32 + 0.69 = 1.01 <= 1.04
+    orders = engine.build_safe_grid(
+        fair_up=0.55,
+        fair_dn=0.45,
+        inv=inv,
+        rem_sec=260.0,
+        best_ask_dn=0.69
+    )
+    assert len(orders) == 1
+    hedge_order = orders[0]
+    assert hedge_order.side == "DOWN"
+    assert hedge_order.tag == "hedge"
+    # 核心断言: 绝不是旧版的 0.42 深折价排队，而是直接按卖一价 0.69 触发闪电吃单！
+    assert hedge_order.price == 0.69
+    assert hedge_order.shares == pytest.approx(3.25)
+
 
 
 
