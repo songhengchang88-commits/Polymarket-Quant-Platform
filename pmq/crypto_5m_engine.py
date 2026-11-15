@@ -668,9 +668,12 @@ class Crypto5mEngine:
                     avail_shares += ask_sz
                     strictly_better = True
                 elif ask_p == od.price:
-                    # 隐患消除 1: 真实做市排队队列惩罚 (Queue Position Penalty)
-                    # 同价排队必须对手盘深度 >= 挂单量的 1.8 倍才算排到，且按 50% 保守吃单
-                    if ask_sz >= od.shares * 1.8:
+                    if od.tag == "hedge":
+                        # 对冲属于主动 Taker 扫单，对手盘卖单真实存在即可直接吃单，不受被动排队惩罚阻碍！
+                        avail_shares += ask_sz
+                        strictly_better = True
+                    elif ask_sz >= od.shares * 1.8:
+                        # 真实做市排队队列惩罚仅适用于被动 discount 挂单
                         avail_shares += ask_sz * 0.50
                     break
                 else:

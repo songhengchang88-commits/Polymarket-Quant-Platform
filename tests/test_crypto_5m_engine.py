@@ -319,4 +319,22 @@ def test_v40_micro_friction_tolerance_salvage():
     assert orders[0].shares == 3.0
 
 
+def test_v41_taker_hedge_fill_exemption_from_maker_penalty():
+    """验证 v4.1 对冲吃单免除被动排队惩罚: 主动吃单无需对手盘 1.8 倍深度，直接按击穿档成交"""
+    from pmq.crypto_5m_engine import Crypto5mEngine, MarketInventory, GridOrder
+    engine = Crypto5mEngine(coins=['btc'], initial_paper_capital=30.0, persist_ledger=False)
+    inv = MarketInventory(slug='btc-test', coin='btc', base_ts=1000, strike_k=70000.0, token_up='u', token_down='d')
+    inv.up_shares = 3.0
+    inv.up_cost = 1.50
+
+    # 挂 3.0 份 DOWN 对冲单，价格对齐当前卖一 0.50
+    inv.open_orders = [GridOrder(side="DOWN", price=0.50, shares=3.0, cost_usd=1.50, tag="hedge")]
+    # 对手盘仅有 3.5 份深度 (3.5 < 3.0 * 1.8 = 5.4，旧逻辑会因不足 1.8 倍深度直接判定排队未到拒绝撮合)
+    engine.simulate_shadow_fills(inv, asks_up=[], asks_dn=[(0.50, 3.5)])
+    # 关键断言: 对冲单作为主动 Taker 成功免除 1.8 倍排队惩罚，按击穿档 85% 比例真实撮合 2.55 份！
+    assert inv.down_shares == pytest.approx(2.55, abs=0.01)
+    assert inv.paired_shares == pytest.approx(2.55, abs=0.01)
+
+
+
 
