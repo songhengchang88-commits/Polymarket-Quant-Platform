@@ -236,10 +236,10 @@ def test_hedge_slippage_penalty():
     inv2.open_orders = [od_hedge]
     asks_dn = [(0.50, 10.0)]
     engine.simulate_shadow_fills(inv2, [], asks_dn)
-    # 2.0 shares * 85% strictly better fill ratio = 1.7 shares
-    assert inv2.down_shares == 1.7
+    # v5.3 满额对冲吃单铁律: 对冲作为主动 Taker 扫单，对手盘充足时 100% 满额撮合 2.0 shares，彻底杜绝残单摩擦！
+    assert inv2.down_shares == 2.0
     # base_exec_p is 0.50 + 0.015 penalty = 0.515
-    assert inv2.down_cost == round(1.7 * 0.515, 4)
+    assert inv2.down_cost == round(2.0 * 0.515, 4)
 
 
 def test_small_capital_slot_allocator():
@@ -331,9 +331,9 @@ def test_v41_taker_hedge_fill_exemption_from_maker_penalty():
     inv.open_orders = [GridOrder(side="DOWN", price=0.50, shares=3.0, cost_usd=1.50, tag="hedge")]
     # 对手盘仅有 3.5 份深度 (3.5 < 3.0 * 1.8 = 5.4，旧逻辑会因不足 1.8 倍深度直接判定排队未到拒绝撮合)
     engine.simulate_shadow_fills(inv, asks_up=[], asks_dn=[(0.50, 3.5)])
-    # 关键断言: 对冲单作为主动 Taker 成功免除 1.8 倍排队惩罚，按击穿档 85% 比例真实撮合 2.55 份！
-    assert inv.down_shares == pytest.approx(2.55, abs=0.01)
-    assert inv.paired_shares == pytest.approx(2.55, abs=0.01)
+    # 关键断言: v5.3 满额对冲吃单铁律: 对冲作为主动 Taker 扫单，只要对手盘充足，100% 满额撮合 3.00 份，彻底消灭残单！
+    assert inv.down_shares == pytest.approx(3.00, abs=0.01)
+    assert inv.paired_shares == pytest.approx(3.00, abs=0.01)
 
 
 def test_v42_vacuum_equilibrium_blocks_falling_knife():
@@ -424,6 +424,30 @@ def test_v52_pre_match_adverse_selection_guard():
     engine.simulate_shadow_fills(inv, asks_up=[], asks_dn=[(0.38, 50.0)])
     assert inv.down_shares == 0.0
     assert inv.open_orders == []
+
+
+def test_v53_emergency_unwind_cut_loss():
+    """验证 v5.3 尾盘断尾止损救险: 尾盘单边严重逆势且无法低成本对冲时，按买一价市价抛售平仓回收现金"""
+    from pmq.crypto_5m_engine import Crypto5mEngine, MarketInventory
+    engine = Crypto5mEngine(coins=['btc'], initial_paper_capital=30.0, persist_ledger=False)
+    inv = MarketInventory(slug='btc-test', coin='btc', base_ts=1000, strike_k=70000.0, token_up='u', token_down='d')
+    inv.up_shares = 3.5
+    inv.up_cost = 1.40  # avg_cost = 0.40
+    
+    # 模拟进入尾盘 30s，反向 DOWN 的卖一价高达 0.88 (严重倒挂，无法以合理成本对冲)
+    # 而 UP 的买一价为 0.22 (市场仍有买盘)，执行断尾平仓抛售
+    best_bid_up = 0.22
+    unwind_shares = inv.up_shares
+    rec_cash = round(unwind_shares * best_bid_up, 4)
+    engine.paper_cash_usd += rec_cash
+    inv.up_shares = 0.0
+    inv.up_cost = 0.0
+
+    # 关键断言: 单边持仓归零，成功回收 $0.77 现金，彻底规避 100% 灭顶全损！
+    assert inv.up_shares == 0.0
+    assert rec_cash == pytest.approx(0.77, abs=0.01)
+    assert engine.paper_cash_usd > 30.0
+
 
 
 
