@@ -1,3 +1,4 @@
+# SYNC v20261112-1 (public base e5e011a) — source: local release v20261112-1, 2026-11-12 12:17 CST deployed; do NOT overwrite with public-repo version.
 """
 paper_runner.py — 闸门 A 纸面长跑编排器（阶段 2：纸面同构长跑驱动）
 
@@ -101,7 +102,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, List, Optional
 
 from mm_ledger import MmLedger, micro_to_decimal
-from paper_engine import PaperEngine
+from paper_engine import PaperEngine, _mid_micro
 from reconcile_paper import reconcile_connection
 from risk_breaker import BreakerSnapshot, RiskBreaker
 from sdk_adapter import SdkReadOnlyAdapter
@@ -121,6 +122,7 @@ DEFAULT_CANDIDATE_LIMIT = 150      # 候选池：按 24h 量取前 N 再评分�
 DEFAULT_BULK_CHUNK_TOKENS = 50     # 批量盘口单次 token 数（分片拉取）
 DEFAULT_MAX_CONSEC_FAILURES = 3    # 单市场连续失败达此数暂时摘除
 DEFAULT_SUSPEND_ROUNDS = 20        # 摘除后多少轮尝试恢复
+MAX_SUSPEND_ROUNDS = 160           # OI-17③：指数退避上限（20 轮 ×8，约 27 分钟）
 STALE_BOOK_MAX_SEC = 180           # 盘口服务端时间戳超龄判陈旧（A-10；轮询 15s，留足冗余）
 RETRY_ATTEMPTS = 4                 # 批量拉取失败重试次数（自备退避，适配层无重试）
 RETRY_BASE_DELAY_SEC = 1.0         # 指数退避基数：1s, 2s, 4s（+ 抖动）
@@ -136,7 +138,11 @@ REEVAL_FIRST_ROUND = 2             # 缓存恢复后第几轮起做新鲜重评
 REEVAL_RETRY_ROUNDS = 20           # 重评失败后隔多少轮再试
 RECONCILE_EVERY_ROUNDS = 60        # 在线对账节拍：每 60 轮（约 15 分钟）真勾稽一次
 MARKOUT_TASKS_FILE = "markout_tasks.json"
+MID_SNAPSHOTS_FILE = "mid_snapshots.jsonl"   # 逐轮 mid 落盘（2026-11-08 审计数据缺口处置）
 MARKOUT_TASKS_VERSION = 1
+LAST_MID_FILE = "last_mid.json"              # 最近中间价落盘（OI-16：重启后恢复估值）
+LAST_MID_VERSION = 1
+LAST_MID_MAX_STALE_SEC = 24 * 3600  # 落盘 mid 超 24h 未更新不再恢复（与待采任务同口径）
 MARKOUT_TASKS_MAX_STALE_SEC = 24 * 3600  # 待采任务到期超此时长未采 → 不再回注、计丢失
                                          # （再采的中间价已非 300s 口径，采了反而污染样本）
 
@@ -348,7 +354,10 @@ class PaperRunner:
 
         self.pool: Dict[str, Dict] = {}        # market_id → 注册信息
         self._fail_count: Dict[str, int] = {}
+        self._fail_reason: Dict[str, str] = {}  # market_id → 末次数据失败原因（猎查留痕）
+        self._held_unpriced_markets: set = set()  # 本轮无新鲜盘口的离池持仓市场（OI-16 留痕）
         self._suspended_until: Dict[str, int] = {}   # market_id → 恢复轮次
+        self._suspend_count: Dict[str, int] = {}  # OI-17③：本轮程内各市场摘除次数（指数退避用）
         self._breaker_engaged = False
         self._round = 0
         self._pool_reeval_pending = False      # 缓存恢复后待新鲜重评（登记 6）
@@ -386,6 +395,29 @@ class PaperRunner:
 
     # -- markout 待采任务持久化（模块头登记 7） --------------------------------
 
+    def _append_mid_snapshot(self, now: datetime, books: Dict) -> None:
+        """逐轮 mid 落盘（2026-11-08）：根因审计时「上一轮 mid」无处
+        可查、只能反推估算（loss-root-cause.md Q2 辅参照数据不足）。
+        每轮把池内各 token 的 mid（双边齐全才记）追加一行 jsonl，
+        供后续审计/归因直接取用；写失败只记日志、不许影响轮次。
+        离池持仓的估值盘口由 step_round 另行调一次本函数追加同轮
+        第二行（仅含估值盘口 token），消费方按 round 合并。"""
+        try:
+            mids = {}
+            for tid, b in books.items():
+                bb, ba = b.get("best_bid"), b.get("best_ask")
+                if bb is not None and ba is not None:
+                    mids[tid] = int(round((float(bb) + float(ba)) / 2 * 1_000_000))
+            if not mids:
+                return
+            path = os.path.join(self.run_dir, MID_SNAPSHOTS_FILE)
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"ts": now.isoformat(),
+                                     "round": self._round,
+                                     "mids": mids}) + "\n")
+        except Exception as exc:  # noqa: BLE001 — 分析落盘不许杀轮次
+            self._log(f"mid 快照落盘失败（忽略）：{exc!r}")
+
     def _markout_tasks_path(self) -> str:
         return os.path.join(self.run_dir, MARKOUT_TASKS_FILE)
 
@@ -422,17 +454,85 @@ class PaperRunner:
         tasks = []
         for t in raw.get("tasks") or []:
             try:
-                tasks.append({
+                task = {
                     "fill_id": int(t["fill_id"]),
                     "market_id": str(t["market_id"]),
                     "token_id": str(t["token_id"]),
                     "side": str(t["side"]),
                     "mid_at_fill_micro": int(t["mid_at_fill_micro"]),
                     "due_ms": int(t["due_ms"]),
-                })
+                }
             except (KeyError, TypeError, ValueError):
                 continue   # 单条畸形不拖垮其余任务
+            # 双口径 markout 参照（OI-18，2026-11-10 猎查）：落盘文件含
+            # gen_mid_micro / markout_source，旧加载器按固定字段重建会
+            # 丢掉二者——重启后待采任务续采只剩 paper_sim 单条，genmid
+            # 样本永久缺失（fill 65 实测）。可选字段单条解析失败只丢
+            # 该字段，不拖垮整条任务。
+            try:
+                if t.get("gen_mid_micro") is not None:
+                    task["gen_mid_micro"] = int(t["gen_mid_micro"])
+            except (TypeError, ValueError):
+                pass
+            try:
+                if t.get("markout_source") is not None:
+                    task["markout_source"] = str(t["markout_source"])
+            except (TypeError, ValueError):
+                pass
+            tasks.append(task)
         return tasks
+
+    def _last_mid_path(self) -> str:
+        return os.path.join(self.run_dir, LAST_MID_FILE)
+
+    def _persist_last_mid(self) -> None:
+        """把引擎当前最近中间价原子落盘（每轮一次 + 退出前一次）。
+        落盘失败只记日志——持久化是防净值跳变的保险丝，不能反过来杀长跑。"""
+        try:
+            now_ms = int(time.time() * 1000)
+            data = {"version": LAST_MID_VERSION,
+                    "saved_at_ms": now_ms,
+                    "mids": {t: {"mid_micro": int(m), "at_ms": now_ms}
+                             for t, m in self.engine.pending_last_mids().items()}}
+            path = self._last_mid_path()
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+            os.replace(tmp, path)
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"最近中间价落盘失败（下一轮重试）：{exc!r}")
+
+    def _load_last_mid(self) -> Dict[str, int]:
+        """读回落盘的最近中间价；文件缺失/损坏/版本不符/超 24h 一律按空处理
+        （回到旧行为：重启后无 mid 的持仓走成本兜底）。"""
+        path = self._last_mid_path()
+        if not os.path.exists(path):
+            return {}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"最近中间价文件损坏，按空处理：{exc!r}")
+            return {}
+        if raw.get("version") != LAST_MID_VERSION:
+            self._log(f"最近中间价文件版本不符（{raw.get('version')}），按空处理")
+            return {}
+        try:
+            saved_at_ms = int(raw.get("saved_at_ms") or 0)
+        except (TypeError, ValueError):
+            return {}
+        if int(time.time() * 1000) - saved_at_ms > LAST_MID_MAX_STALE_SEC * 1000:
+            self._log("最近中间价文件超 24h 未更新，按空处理")
+            return {}
+        mids: Dict[str, int] = {}
+        for token_id, entry in (raw.get("mids") or {}).items():
+            try:
+                mid = int(entry["mid_micro"])
+            except (KeyError, TypeError, ValueError):
+                continue   # 单条畸形不拖垮其余 mid
+            if mid > 0:
+                mids[str(token_id)] = mid
+        return mids
 
     # -- 启动恢复（模块头口径 2） ----------------------------------------------
 
@@ -496,6 +596,11 @@ class PaperRunner:
             for m, toks in positions.items()
         }
         self.engine._positions = {m: toks for m, toks in restored.items() if toks}
+        # 最近中间价恢复（OI-16）：_last_mid 只在内存，重启后离池持仓
+        # 无 mid 即走成本兜底，净值在重启瞬间凭空跳变（2026-11-08
+        # 19:57 UTC 实测 −4.14，离熔断线仅 1.38）。恢复上轮 mid 后，
+        # 重启前后估值口径一致；文件缺失/过期时回落旧行为（成本兜底）。
+        restored_mids = self.engine.restore_last_mids(self._load_last_mid())
         stale = 0
         for order in self.ledger.get_open_orders():
             self.ledger.update_order_status(order["id"], "cancelled")
@@ -503,6 +608,7 @@ class PaperRunner:
         return {"positions_restored": sum(len(t) for t in self.engine._positions.values()),
                 "stale_orders_cancelled": stale,
                 "markout_tasks_restored": len(restored_tasks),
+                "last_mid_restored": restored_mids,
                 "markout_tasks_lost": lost_markouts}
 
     # -- 市场池 -----------------------------------------------------------------
@@ -726,6 +832,17 @@ class PaperRunner:
         for mid in list(self._suspended_until):
             if mid not in self.pool:
                 del self._suspended_until[mid]
+        # 离池市场在挂单清理（2026-11-08 猎查）：离池市场的在挂单
+        # 此前只在重启恢复时才被当 stale 清理，期间以 open 残留
+        # （实测：10:32 建仓的 19 单因市场 2 分钟后离池而残留至
+        # 12:29 重启才清理；纸面期订单已无法成交故无 PnL 影响，
+        # 但账本 open 口径失真，实盘复用此流转前必须先清）。
+        dropped = [mid for mid in old_pool if mid not in self.pool]
+        cancelled = 0
+        for mid in dropped:
+            cancelled += self.engine.cancel_market_orders(mid)
+        if cancelled:
+            self._log(f"选池重评：离池 {len(dropped)} 市场，清理在挂单 {cancelled} 单")
         self._pool_reeval_pending = False
         self._pool_event({"type": "pool_reevaluated", **info,
                           "market_ids": list(self.pool.keys())})
@@ -791,6 +908,17 @@ class PaperRunner:
         return [mid for mid in self.pool
                 if self._suspended_until.get(mid, 0) <= self._round]
 
+    def _suspend_delay(self, count: int) -> int:
+        """OI-17③：同市场多次摘除后延后恢复（指数退避）。
+
+        第 n 次摘除延后 suspend_rounds × 2^(n-1) 轮，封顶
+        MAX_SUSPEND_ROUNDS。恢复后成功喂入一次即清零（见 step_round），
+        故只有“摘除→恢复→立刻再败”的循环才会越退越远；一度恢复正常
+        报价的市场下次失败从首档重算。
+        """
+        return min(self.suspend_rounds * (2 ** max(count - 1, 0)),
+                   MAX_SUSPEND_ROUNDS)
+
     def step_round(self) -> Dict:
         """一轮：批量拉池内市场两腿盘口 → 逐市场喂引擎 → 全局 markout
         采样 → 熔断判定。返回本轮统计。"""
@@ -802,6 +930,7 @@ class PaperRunner:
             for t in self.pool[mid]["market"].get("clob_token_ids") or []:
                 token_owner[t] = mid
         books = self._fetch_books_bulk(list(token_owner.keys()))
+        self._append_mid_snapshot(now, books)
 
         fed, fills, quotes = 0, 0, 0
         failed_markets = set()
@@ -818,6 +947,15 @@ class PaperRunner:
                 for b in mbooks.values())
             if len(mbooks) < len(tokens) or stale or \
                     all(b.get("depth_count", 0) == 0 for b in mbooks.values()):
+                # 失败原因留痕（2026-11-08 猎查）：此前该分支不记原因，
+                # 6722265 等市场连续失败数小时却无法从日志定位到哪一支。
+                if len(mbooks) < len(tokens):
+                    reason = f"两腿缺失（{len(mbooks)}/{len(tokens)} 腿返回）"
+                elif stale:
+                    reason = "盘口陈旧（服务端时间戳超龄）"
+                else:
+                    reason = "双腿空盘（depth_count 均为 0）"
+                self._fail_reason[mid] = reason
                 failed_markets.add(mid)
                 continue
             try:
@@ -832,14 +970,31 @@ class PaperRunner:
             fills += len([f for f in report["fills"] if "fill_id" in f])
             quotes += len(report["quotes"])
             self._fail_count[mid] = 0
+            self._fail_reason.pop(mid, None)
+            # OI-17③：恢复后成功喂入一次，摘除计数清零（循环才累进）。
+            self._suspend_count.pop(mid, None)
         for mid in failed_markets:
             self._fail_count[mid] = self._fail_count.get(mid, 0) + 1
             if self._fail_count[mid] >= self.max_consec_failures:
-                self._suspended_until[mid] = self._round + self.suspend_rounds
+                # OI-17③：同市场多次摘除后延后恢复（指数退避，封顶
+                # MAX_SUSPEND_ROUNDS）。2026-11-11 实测：1250830 一日
+                # 摘除 27 次、2126461 15 次，固定 20 轮恢复即再败，
+                # 喂入 <30 的轮次占 14.7%。
+                n = self._suspend_count.get(mid, 0) + 1
+                self._suspend_count[mid] = n
+                delay = self._suspend_delay(n)
+                self._suspended_until[mid] = self._round + delay
                 self._fail_count[mid] = 0
+                detail = self._fail_reason.get(mid, "原因未记录")
+                self._log(f"市场 {mid} 连续数据失败达阈值（末次原因：{detail}），"
+                          f"摘除至第 {self._suspended_until[mid]} 轮"
+                          f"（本轮程内第 {n} 次摘除，延后 {delay} 轮）")
                 self._pool_event({"type": "market_suspended", "market_id": mid,
                                   "reason": "连续数据失败达阈值",
-                                  "resume_round": self._suspended_until[mid]})
+                                  "fail_reason": detail,
+                                  "resume_round": self._suspended_until[mid],
+                                  "suspend_count": n,
+                                  "delay_rounds": delay})
         # 恢复到期的摘除市场
         for mid, until in list(self._suspended_until.items()):
             if until <= self._round and mid in self.pool:
@@ -862,13 +1017,37 @@ class PaperRunner:
                     by_market.setdefault(m, {})[t] = ebooks[t]
             for m, mb in by_market.items():
                 self.engine.note_books(m, mb)
+            # 无新鲜盘口的离池持仓留痕（OI-16）：此前该分支全程静默——
+            # 盘口缺失/空盘时 _last_mid 不更新，估值沿用既有 mid（有
+            # 落盘恢复）或成本兜底（无恢复）；集合变化时记一行，恢复时
+            # 再记一行，不逐轮刷屏。
+            missing_markets = sorted(
+                {m for t, m in extra_tokens.items()
+                 if _mid_micro(ebooks.get(t) or {}) is None})
+            if missing_markets != sorted(self._held_unpriced_markets):
+                if missing_markets:
+                    self._log(f"离池持仓本轮无新鲜盘口（估值沿用既有 mid/成本兜底）："
+                              f"{missing_markets}")
+                else:
+                    self._log(f"离池持仓盘口恢复：{sorted(self._held_unpriced_markets)}")
+                self._held_unpriced_markets = set(missing_markets)
+            # 估值盘口也进 mid 快照（2026-11-08 猎查）：此前快照只含
+            # 池内市场，离池持仓（约半数库存、113 份）的 mid 变动在快
+            # 照中不可见，净值跳变无法归因——实证：11-08 00:25→00:47
+            # UTC 净值 +4.66，而池内快照归因仅 −0.09，剩余 +4.75 只能
+            # 是离池持仓 MtM。同一轮写第二行（同一 round 号、仅含
+            # 估值盘口 token），消费方按 round 合并。
+            self._append_mid_snapshot(now, ebooks)
 
         self.engine.sample_markouts(now)
         self._persist_markout_tasks()   # 登记 7：采样后落盘待采任务（防重启丢样本）
+        self._persist_last_mid()        # OI-16：落盘最近中间价（防重启估值跳变）
         breaker_info = self._apply_breaker(now)
         stats = {"round": self._round, "active": len(active), "fed": fed,
                  "fills": fills, "quotes": quotes,
-                 "failed": len(failed_markets), "breaker": breaker_info,
+                 "failed": len(failed_markets),
+                 "held_unpriced": len(self._held_unpriced_markets),
+                 "breaker": breaker_info,
                  "engine_stats": dict(self.engine.stats)}
         self._log(f"第 {self._round} 轮：喂入 {fed}/{len(active)} 市场，"
                   f"成交 {fills}，新报价 {quotes}，失败 {len(failed_markets)}，"
@@ -929,6 +1108,7 @@ class PaperRunner:
             self._log("收到 KeyboardInterrupt，优雅停机")
         finally:
             self._persist_markout_tasks()   # 退出前最后落盘一次（登记 7）
+            self._persist_last_mid()        # OI-16：退出前最后落盘一次最近中间价
         summary["pool_size"] = len(self.pool)
         summary["restore_info"] = self.restore_info
         return summary
@@ -967,8 +1147,16 @@ def daily_report(run_dir: str, day_key: Optional[str] = None) -> str:
         n = len(vs)
         return vs[n // 2] if n % 2 == 1 else (vs[n // 2 - 1] + vs[n // 2]) // 2
 
-    day_median = _median([s["markout_micro"] for s in samples])
-    all_median = _median([s["markout_micro"] for s in all_samples])
+    # 双口径分列（2026-11-08）：主口径=生成时 mid（paper_sim_genmid，
+    # 含成交跳变），对照口径=成交时 mid（其余 source）；永不混算。
+    gen_samples = [s for s in samples if s["source"] == "paper_sim_genmid"]
+    leg_samples = [s for s in samples if s["source"] != "paper_sim_genmid"]
+    gen_all = [s for s in all_samples if s["source"] == "paper_sim_genmid"]
+    leg_all = [s for s in all_samples if s["source"] != "paper_sim_genmid"]
+    day_median = _median([s["markout_micro"] for s in gen_samples])
+    all_median = _median([s["markout_micro"] for s in gen_all])
+    day_median_leg = _median([s["markout_micro"] for s in leg_samples])
+    all_median_leg = _median([s["markout_micro"] for s in leg_all])
     day_fees = sum(f["fee_micro"] for f in fills)
 
     equity_state = {}
@@ -1013,9 +1201,11 @@ def daily_report(run_dir: str, day_key: Optional[str] = None) -> str:
         f"- 历史净值峰值：{usd(peak)}",
         f"- 当日成交笔数：{len(fills)}（累计 {total_fills}）",
         f"- 当日手续费合计：{usd(day_fees)}（纸面 CostModel 口径，默认费率 0，见引擎登记）",
-        f"- 当日 markout(5m) 样本数：{len(samples)}，中位数（价格单位）："
+        f"- 当日 markout(5m) 主口径（生成时 mid）样本数：{len(gen_samples)}，中位数（价格单位）："
         f"{'—' if day_median is None else micro_to_decimal(day_median)}",
-        f"- 累计 markout(5m) 样本数：{len(all_samples)}，中位数（价格 micro）：{all_median}",
+        f"- 累计 markout(5m) 主口径样本数：{len(gen_all)}，中位数（价格 micro）：{all_median}",
+        f"- 当日 markout(5m) 对照口径（成交时 mid）样本数：{len(leg_samples)}，中位数（价格 micro）：{day_median_leg}",
+        f"- 累计 markout(5m) 对照口径样本数：{len(leg_all)}，中位数（价格 micro）：{all_median_leg}",
         f"- 熔断状态（落盘）：{breaker_state}",
         f"- 当日市场池变动：{len(pool_changes)} 条",
     ]
