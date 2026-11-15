@@ -1,3 +1,4 @@
+# SYNC v20261112-1 (public base e5e011a) — source: local release v20261112-1, 2026-11-12 12:17 CST deployed; do NOT overwrite with public-repo version.
 """
 market_scoring.py — 选市评分骨架（纸面地基，阶段 2 前置）
 
@@ -17,9 +18,10 @@ market_scoring.py — 选市评分骨架（纸面地基，阶段 2 前置）
 该项记 0 分并在 breakdown 与 missing_fields 中标注 missing，
 严禁用假数据、默认值或插值填充。否决项同理分三态：
 hit（命中）／clear（已核查通过）／unknown（数据缺失、无法判定，
-不触发否决但写入 veto_unknown 供人工复核）——唯一例外是 §5.1-1：
-方案原文把「政策不明」本身列为否决条件，故 rewards 缺失即按
-政策不明命中否决。
+不触发否决但写入 veto_unknown 供人工复核）——例外有二：§5.1-1
+（方案原文把「政策不明」本身列为否决条件，故 rewards 缺失即按
+政策不明命中否决）；§5.1-6（OI-13，Jason 2026-11-09 批准：books
+为空即两腿盘口均未返回，按命中否决，本轮不入选、下次重评可再入选）。
 
 数值阈值来源分两类，代码中逐项注明：
 - 【方案】：方案原文给出的数字（权重、3% 价差、48h、20% 占盘口、
@@ -192,7 +194,11 @@ def _run_vetoes(market, books, rewards, history, related, manual_flags,
                 hit("5.1-6", f"token {tid} 单侧深度为 0（空盘）")
                 break
     else:
-        unknown("5.1-6", "无订单簿深度数据")
+        # OI-13（Jason 2026-11-09 批准）：books 为空即两腿盘口均未返回，
+        # 改记 hit——本轮建池否决该市场，下次重评可再入选。旧口径只记
+        # unknown 不否决，导致无盘口市场入选后每轮数据失败、反复摘除
+        # （实证：6722265 NVDA $200 于 11-07 摘除 30 次）。
+        hit("5.1-6", "无订单簿深度数据（建池时两腿盘口未返回）")
 
     # §5.1-7 规则/结算口径含糊（人工标记）
     if flags.get("ambiguous_settlement"):

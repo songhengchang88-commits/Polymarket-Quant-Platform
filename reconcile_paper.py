@@ -1,3 +1,4 @@
+# SYNC v20261112-1 (public base e5e011a) — source: local release v20261112-1, 2026-11-12 12:17 CST deployed; do NOT overwrite with public-repo version.
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """纸面账本独立三表勾稽（线 3 加固交付，替代编排层构造性 True 的 reconcile_ok）。
@@ -143,8 +144,15 @@ def reconcile_connection(conn, log_lost_cumulative=None):
     missing = []
     for f in fills:
         lst = s_by_fill.get(f["id"], [])
-        if len(lst) > 1:
-            hard.append(f"D1 fill {f['id']} 有 {len(lst)} 条 markout 样本 (应至多 1)")
+        # D1（2026-11-08 双口径修订）：每 fill 每 source 至多 1 条；
+        # paper_sim（成交时 mid）与 paper_sim_genmid（生成时 mid）双
+        # 口径并存为合法，同口径重复才是硬差异。
+        by_source = defaultdict(int)
+        for s in lst:
+            by_source[s["source"]] += 1
+        for src_name, cnt in by_source.items():
+            if cnt > 1:
+                hard.append(f"D1 fill {f['id']} source={src_name} 有 {cnt} 条 markout 样本 (应至多 1)")
         if len(lst) == 0:
             missing.append(f["id"])
         for s in lst:

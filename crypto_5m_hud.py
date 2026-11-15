@@ -391,10 +391,10 @@ async function fetchAndRender() {
 
     // 链上资金透视与钱包状态
     const cf = live.live_chain_funds || {};
-    if (cf.proxy_pusd !== undefined) {
+    if (cf.proxy_pusd !== undefined && cf.proxy_pusd !== null) {
       document.getElementById("live-pusd-val").textContent = `$${Number(cf.proxy_pusd).toFixed(2)}`;
     }
-    if (cf.wallet_pol !== undefined) {
+    if (cf.wallet_pol !== undefined && cf.wallet_pol !== null) {
       document.getElementById("live-pol-val").textContent = Number(cf.wallet_pol).toFixed(4);
     }
     if (cf.wallet_addr) {
@@ -413,6 +413,10 @@ async function fetchAndRender() {
       gasBadge.className = "px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40 animate-pulse";
       gasBadge.textContent = "Gas不足需充";
       gasBadge.title = "实盘模式下签名钱包 POL 余额低于 0.1，请向钱包充值少量 POL。";
+    } else if (cf.gas_ok === null || cf.gas_ok === undefined) {
+      gasBadge.className = "px-1.5 py-0.5 rounded text-[10px] font-bold bg-zinc-500/20 text-zinc-300 border border-zinc-500/40";
+      gasBadge.textContent = "资金未知";
+      gasBadge.title = "链上资金未取到实时数据（未配置钱包地址或 RPC 失败），不展示余额、不判 Gas 充足。";
     } else {
       gasBadge.className = "px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40";
       gasBadge.textContent = "Gas充沛";

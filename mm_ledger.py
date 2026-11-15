@@ -1,3 +1,4 @@
+# SYNC v20261112-1 (public base e5e011a) — source: local release v20261112-1, 2026-11-12 12:17 CST deployed; do NOT overwrite with public-repo version.
 """
 mm_ledger.py — 做市账本（纸面地基，阶段 2 前置）
 
@@ -164,7 +165,13 @@ class MmLedger:
         self.mode = mode
         self.path = os.path.join(base_dir, f"mm_ledger_{mode}.sqlite3")
         os.makedirs(base_dir, exist_ok=True)
-        self._conn = sqlite3.connect(self.path)
+        # OI-19：busy timeout 由默认 5s 提至 30s。账本为 rollback-journal
+        # 模式，外部长读事务（对账 SELECT * FROM orders 全表扫描实测约
+        # 4s 且随表增长、在线 backup 拷贝约 2.2s，二者重叠即超 5s）会饿死
+        # 本进程的提交，致 on_book 报 database is locked、该市场当轮误计
+        # 数据失败；30s 覆盖实测约 10–16s 的持锁时长，轮次最长拉长约一轮，
+        # 远低于守卫 300s/600s 故障阈值，不触发自愈重启。
+        self._conn = sqlite3.connect(self.path, timeout=30)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.executescript(_SCHEMA)
@@ -354,12 +361,15 @@ class MmLedger:
         self._check_mode(mode)
         self._check_int("mid_at_fill_micro", mid_at_fill_micro)
         self._check_int("mid_at_horizon_micro", mid_at_horizon_micro)
-        # 幂等（加固 L1-07）：同一 (fill, horizon) 已有样本则回既有 id，
-        # 不重复写入污染闸门中位数（schema UNIQUE 迁移留待闸门结束后）。
+        # 幂等（加固 L1-07，2026-11-08 双口径扩展）：同一
+        # (fill, horizon, source) 已有样本则回既有 id，不重复写入污染
+        # 闸门中位数（schema UNIQUE 迁移留待闸门结束后）。source 进键是
+        # 为双口径落账：同一 fill 允许 paper_sim（成交时 mid 参照）与
+        # paper_sim_genmid（报价生成时 mid 参照）各一条。
         existing = self._conn.execute(
             "SELECT id FROM markout_samples WHERE mode=? AND fill_id=? "
-            "AND horizon_sec=?",
-            (self.mode, fill_id, horizon_sec)).fetchone()
+            "AND horizon_sec=? AND source=?",
+            (self.mode, fill_id, horizon_sec, source)).fetchone()
         if existing is not None:
             return int(existing["id"])
         markout = compute_markout_micro(side, mid_at_fill_micro, mid_at_horizon_micro)
@@ -382,13 +392,21 @@ class MmLedger:
             args.append(market_id)
         return [dict(r) for r in self._conn.execute(sql, args)]
 
-    def median_markout_micro(self, market_id: str, horizon_sec: int = 300) -> Optional[int]:
-        """markout 中位数（整数 micro）——闸门 A / §5.1-5 / §6.3 的共同判定量。"""
-        rows = self._conn.execute(
-            """SELECT markout_micro FROM markout_samples
-               WHERE mode=? AND market_id=? AND horizon_sec=?
-               ORDER BY markout_micro""",
-            (self.mode, market_id, horizon_sec)).fetchall()
+    def median_markout_micro(self, market_id: str, horizon_sec: int = 300,
+                             source: Optional[str] = None) -> Optional[int]:
+        """markout 中位数（整数 micro）——闸门 A / §5.1-5 / §6.3 的共同判定量。
+
+        2026-11-08 双口径后注意：缺省 source=None 会把成交时口径与
+        生成时口径混算，闸门判定必须显式传 source（主口径
+        "paper_sim_genmid"），两口径永不混算。"""
+        sql = ("""SELECT markout_micro FROM markout_samples
+               WHERE mode=? AND market_id=? AND horizon_sec=?""")
+        args: list = [self.mode, market_id, horizon_sec]
+        if source is not None:
+            sql += " AND source=?"
+            args.append(source)
+        sql += " ORDER BY markout_micro"
+        rows = self._conn.execute(sql, args).fetchall()
         if not rows:
             return None
         values = [r["markout_micro"] for r in rows]
