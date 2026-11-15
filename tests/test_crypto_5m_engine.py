@@ -348,6 +348,38 @@ def test_v42_vacuum_equilibrium_blocks_falling_knife():
     assert orders == []
 
 
+def test_v51_elastic_dynamic_taker_flush():
+    """验证 v5.1 弹性自适应对冲吃单机制: 逆势下杀与尾盘阶段自动提升容忍上限，主动 Taker 扫单防裸奔"""
+    from pmq.crypto_5m_engine import Crypto5mEngine, MarketInventory
+    engine = Crypto5mEngine(coins=['btc'], initial_paper_capital=30.0, persist_ledger=False)
+    
+    # 场景 1: 持有 UP 仓位 4.0 份 (成本 0.38)，行情下杀导致 fair_up 降至 0.35
+    inv = MarketInventory(slug='btc-test', coin='btc', base_ts=1000, strike_k=70000.0, token_up='u', token_down='d')
+    inv.up_shares = 4.0
+    inv.up_cost = 1.52  # avg_up_cost = 0.38
+    
+    # 此时盘口卖一 best_ask_dn 为 0.70 (若按旧版 0.96-0.38=0.58 则会教条拒单导致单边全亏)
+    # v5.1 下逆势下杀 fair_up < 0.38，target_cap 自动提升至 1.08，允许卖一高达 0.85 直接吃单
+    orders = engine.build_safe_grid(
+        fair_up=0.35, fair_dn=0.65, inv=inv, rem_sec=180.0,
+        best_ask_dn=0.70
+    )
+    assert len(orders) == 1
+    assert orders[0].side == "DOWN"
+    assert orders[0].tag == "hedge"
+    assert orders[0].price == pytest.approx(0.70)
+    assert orders[0].shares == pytest.approx(4.0)
+
+    # 场景 2: 尾盘 <= 35s 终极救险，盘口卖一高达 0.90 时仍果断主动吃单对冲锁死
+    orders_terminal = engine.build_safe_grid(
+        fair_up=0.20, fair_dn=0.80, inv=inv, rem_sec=30.0,
+        best_ask_dn=0.90
+    )
+    assert len(orders_terminal) == 1
+    assert orders_terminal[0].side == "DOWN"
+    assert orders_terminal[0].price == pytest.approx(0.90)
+
+
 def test_v50_atomic_decision_lock_and_single_unhedged_enclave():
     """验证 v5.0 原子决策锁与单向单边互斥: 当 BTC 已持有未配对 DOWN 单边时，ETH 严禁再开同向 DOWN 试探仓"""
     from pmq.crypto_5m_engine import Crypto5mEngine, MarketInventory
@@ -366,6 +398,8 @@ def test_v50_atomic_decision_lock_and_single_unhedged_enclave():
     # 关键断言: 由于 BTC 已持有 DOWN 单边，跨币同向共振阻断器强制拦截 DOWN 试探仓，只允许开反向 UP 试探仓！
     assert all(o.side == "UP" for o in orders)
     assert not any(o.side == "DOWN" for o in orders)
+
+
 
 
 
