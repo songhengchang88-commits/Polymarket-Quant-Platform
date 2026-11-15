@@ -1,14 +1,15 @@
 """
-Polymarket 5 分钟加密量化指挥舰 (方案二升级版：彭博三币实战矩阵 · 2小时重置周期特训版)
+Polymarket 5 分钟加密量化指挥舰 (方案二升级版：彭博三币实战矩阵 · 每日大样本验证周期特训版)
 ====================================================================
 纯只读消费 data/crypto_5m_live_state.json 与 data/crypto_5m_paper_*.jsonl，
 与核心引擎进程物理隔离，确保零干扰、高刷新的全中文实盘监控体验。
 特性:
-1. 【最高指令】每 2 小时验证周期自动利润清零，强制以 $30.00 重新开跑，杜绝滚雪球资金蒙蔽实操数据！
-2. 链上实盘真实资金实时透视 (Proxy pUSD 余额 + 签名 EOA POL Gas 监测)
-3. 钱包与持仓直达链接 (点击直达 Polymarket Portfolio / 官方市场)
-4. 链上 30 秒兑付资金锁定动态看板 (Locked Cash)
-5. 跨资产宏观风暴熔断 (Macro Storm) 全局状态告警横幅
+1. 【最高指令】每日 (24小时 / 约288轮) 验证周期自动利润清零，扩大样本轮次，消除小样本统计噪声！
+2. 强制以 $30.00 重新开跑，杜绝滚雪球资金蒙蔽实操数据！
+3. 链上实盘真实资金实时透视 (Proxy pUSD 余额 + 签名 EOA POL Gas 监测)
+4. 钱包与持仓直达链接 (点击直达 Polymarket Portfolio / 官方市场)
+5. 链上 30 秒兑付资金锁定动态看板 (Locked Cash)
+6. 跨资产宏观风暴熔断 (Macro Storm) 全局状态告警横幅
 """
 
 import json
@@ -102,12 +103,12 @@ HTML_PAGE = """<!DOCTYPE html>
   <header class="panel rounded-lg p-3 flex flex-wrap items-center justify-between gap-3">
     <div class="flex items-center gap-3">
       <div id="mode-badge" class="px-3 py-1.5 rounded border border-amber-500/50 bg-amber-500/10 text-amber-300 text-xs font-bold tracking-wide">
-        <div>[2小时特训归零模式 · 第 <span id="cycle-idx-val">1</span> 期]</div>
-        <div id="kill-switch-text" class="text-[11px] text-amber-400/90">[每2h清零重置 · $30起跑验证]</div>
+        <div>[每日特训归零模式 · 第 <span id="cycle-idx-val">1</span> 期]</div>
+        <div id="kill-switch-text" class="text-[11px] text-amber-400/90">[每日24h大样本重置 · $30起跑验证]</div>
       </div>
       <div>
         <div class="text-xs text-slate-400 flex items-center gap-2">
-          <span>当期2H本金与净利 (基准 $30.00)</span>
+          <span>当期(24H)本金与净利 (基准 $30.00)</span>
           <span id="cycle-rem-badge" class="mono text-[10px] bg-slate-800 text-cyan-300 px-1.5 py-0.5 rounded border border-slate-700">倒计时: --:-- 清零</span>
         </div>
         <div class="flex items-baseline gap-2">
@@ -159,7 +160,7 @@ HTML_PAGE = """<!DOCTYPE html>
     <!-- 当期统计与历史总承接 -->
     <div class="flex items-center gap-3 text-xs">
       <div class="text-right">
-        <div class="text-slate-400">当期(2H)轮次 / 胜率</div>
+        <div class="text-slate-400">当期(每日24H)轮次 / 胜率</div>
         <div class="mono font-bold text-slate-100"><span id="rounds-stat">0 轮</span> · <span id="winrate-stat" class="text-emerald-400">--%</span></div>
       </div>
       <div class="text-right border-l border-slate-800 pl-3">
@@ -181,7 +182,7 @@ HTML_PAGE = """<!DOCTYPE html>
       <div class="flex items-center justify-between mb-2">
         <h2 class="text-xs font-bold text-slate-300 flex items-center gap-2">
           <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-          5 秒防毒刷新实时心跳日志 (含2H周期与滑点)
+          5 秒防毒刷新实时心跳日志 (含每日周期与滑点)
         </h2>
         <span id="last-update" class="mono text-[11px] text-slate-500">同步中...</span>
       </div>
@@ -384,10 +385,11 @@ async function fetchAndRender() {
     // 周期序号与清零倒计时
     const cycIdx = sum.cycle_index ?? live.cycle_index ?? 1;
     document.getElementById("cycle-idx-val").textContent = cycIdx;
-    const cycRem = sum.cycle_rem_sec ?? live.cycle_rem_sec ?? 7200;
-    const cycMins = Math.floor(cycRem / 60);
+    const cycRem = sum.cycle_rem_sec ?? live.cycle_rem_sec ?? 86400;
+    const cycHours = Math.floor(cycRem / 3600);
+    const cycMins = Math.floor((cycRem % 3600) / 60);
     const cycSecs = Math.floor(cycRem % 60);
-    document.getElementById("cycle-rem-badge").textContent = `倒计时: ${String(cycMins).padStart(2, "0")}:${String(cycSecs).padStart(2, "0")} 清零`;
+    document.getElementById("cycle-rem-badge").textContent = `倒计时: ${String(cycHours).padStart(2, "0")}:${String(cycMins).padStart(2, "0")}:${String(cycSecs).padStart(2, "0")} 清零`;
 
     // 链上资金透视与钱包状态
     const cf = live.live_chain_funds || {};
@@ -423,7 +425,7 @@ async function fetchAndRender() {
       gasBadge.title = "实盘签名 Gas 燃料充足。";
     }
 
-    // 当期 2H 资金
+    // 当期 24H 每日大样本资金
     const eq = sum.current_equity_usd ?? live.current_equity_usd ?? 30.0;
     const initCap = sum.initial_capital_usd ?? live.initial_capital_usd ?? 30.0;
     const netPnl = sum.total_settled_pnl_usd ?? live.total_settled_pnl_usd ?? 0.0;

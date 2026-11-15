@@ -176,6 +176,7 @@ class Crypto5mEngine:
         refresh_seconds: float = 2.0,
         dry_run: bool = True,
         persist_ledger: bool = True,
+        cycle_duration_sec: float = 86400.0,
     ):
         self.coins = coins or ["btc", "eth", "sol"]
         self.initial_paper_capital = float(initial_paper_capital)
@@ -185,6 +186,7 @@ class Crypto5mEngine:
         self.cutoff_seconds = float(cutoff_seconds)
         self.refresh_seconds = float(refresh_seconds)
         self.persist_ledger = persist_ledger
+        self.cycle_duration_sec = float(cycle_duration_sec)  # 每日大样本验证周期 (默认86400秒/24小时，扩大轮次数据)
 
         if not dry_run and is_kill_switch_active():
             logger.warning("🔒 检测到 KILL_SWITCH.lock 停机锁存在，强制降级为真实数据纸面交易模式 (dry_run=True)！")
@@ -304,23 +306,24 @@ class Crypto5mEngine:
     def _save_summary(self):
         if not self.persist_ledger:
             return
-        equity_2h = round(self.cycle_initial_capital + self.cycle_settled_pnl, 4)
-        win_rate_2h = round((self.cycle_wins / max(1, self.cycle_rounds)) * 100, 2) if self.cycle_rounds > 0 else 0.0
+        equity_cycle = round(self.cycle_initial_capital + self.cycle_settled_pnl, 4)
+        win_rate_cycle = round((self.cycle_wins / max(1, self.cycle_rounds)) * 100, 2) if self.cycle_rounds > 0 else 0.0
         summary = {
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "mode": "PAPER_REAL_DATA",
             "initial_capital_usd": self.cycle_initial_capital,
-            "current_equity_usd": equity_2h,
+            "current_equity_usd": equity_cycle,
             "total_settled_pnl_usd": round(self.cycle_settled_pnl, 4),
             "roi_pct": round((self.cycle_settled_pnl / max(1e-9, self.cycle_initial_capital)) * 100, 2),
             "max_drawdown_usd": self.cycle_max_dd,
             "total_rounds": self.cycle_rounds,
             "winning_rounds": self.cycle_wins,
-            "win_rate_pct": win_rate_2h,
+            "win_rate_pct": win_rate_cycle,
             "total_fills": self.cycle_fills,
             "coins": self.coins,
             "cycle_index": self.cycle_index,
-            "cycle_rem_sec": max(0, int(7200.0 - (time.time() - self.cycle_start_time))),
+            "cycle_duration_sec": self.cycle_duration_sec,
+            "cycle_rem_sec": max(0, int(self.cycle_duration_sec - (time.time() - self.cycle_start_time))),
             "lifetime_equity_usd": round(self.initial_paper_capital + self.total_settled_pnl, 4),
             "lifetime_pnl_usd": round(self.total_settled_pnl, 4),
             "lifetime_rounds": self.total_rounds,
@@ -1183,7 +1186,8 @@ class Crypto5mEngine:
             "lifetime_rounds": self.total_rounds,
             "lifetime_wins": self.winning_rounds,
             "cycle_index": self.cycle_index,
-            "cycle_rem_sec": max(0, int(7200.0 - (time.time() - self.cycle_start_time))),
+            "cycle_duration_sec": self.cycle_duration_sec,
+            "cycle_rem_sec": max(0, int(self.cycle_duration_sec - (time.time() - self.cycle_start_time))),
             "total_fills": self.total_fills,
             "coins": self.coin_snapshots,
             "recent_logs": self.recent_logs[-20:],
@@ -1196,24 +1200,25 @@ class Crypto5mEngine:
         except Exception as e:
             logger.debug(f"保存 live_state 异常: {e}")
 
-    def _check_and_reset_2h_cycle(self):
+    def _check_and_reset_daily_cycle(self):
         """
-        每 2 小时验证周期自动归零重置 (最高指示)：
-        - 每满 2 小时 (7200 秒) 自动将周期利润清零；
+        每日大样本验证周期自动归零重置 (最高指示)：
+        - 每日一次 (默认 86400 秒 / 24 小时 / 约 288 轮 5m 周期) 自动将周期利润清零；
+        - 扩大轮次数据，消除短周期小样本噪声与误判，使统计大数定律充分生效；
         - 强制以 30.00 美元初始资金重新开跑，绝不让滚雪球累积资金蒙蔽实战数据；
-        - 完整留存历史全量账本，同时输出当期 2 小时战报。
+        - 完整留存历史全量账本，同时输出当期 24 小时大样本战报。
         """
         now = time.time()
         elapsed = now - self.cycle_start_time
-        if elapsed >= 7200.0:  # 2 hours
-            roi_2h = (self.cycle_settled_pnl / max(1e-9, self.cycle_initial_capital)) * 100
-            winrate_2h = (self.cycle_wins / max(1, self.cycle_rounds)) * 100
+        if elapsed >= self.cycle_duration_sec:
+            roi_cycle = (self.cycle_settled_pnl / max(1e-9, self.cycle_initial_capital)) * 100
+            winrate_cycle = (self.cycle_wins / max(1, self.cycle_rounds)) * 100
             logger.info(
                 f"🔄 ============================================================\n"
-                f"🔄 【第 {self.cycle_index} 轮 2小时验证周期完结·利润归零重置】\n"
-                f"   • 本期战报: 结算 {self.cycle_rounds} 轮 | 胜率 {winrate_2h:.1f}% ({self.cycle_wins}/{self.cycle_rounds})\n"
-                f"   • 本期净利: {self.cycle_settled_pnl:+.4f} USDC (ROI: {roi_2h:+.2f}%)\n"
-                f"   • 执照清零: 强制归位 $30.00 USDC 起始资金，开启第 {self.cycle_index + 1} 周期严苛验证！\n"
+                f"🔄 【第 {self.cycle_index} 轮 每日大样本验证周期完结·利润归零重置】\n"
+                f"   • 本期战报: 结算 {self.cycle_rounds} 轮 | 胜率 {winrate_cycle:.1f}% ({self.cycle_wins}/{self.cycle_rounds})\n"
+                f"   • 本期净利: {self.cycle_settled_pnl:+.4f} USDC (ROI: {roi_cycle:+.2f}%)\n"
+                f"   • 执照清零: 强制归位 $30.00 USDC 起始资金，开启第 {self.cycle_index + 1} 周期每日大样本严苛验证！\n"
                 f"🔄 ============================================================"
             )
             # 归零重置为 $30.00 起始资金
@@ -1325,7 +1330,7 @@ class Crypto5mEngine:
         base_ts = (int(now) // 300) * 300
         rem_sec = (base_ts + 300) - now
 
-        self._check_and_reset_2h_cycle()
+        self._check_and_reset_daily_cycle()
         self._release_settled_funds()
         self.settle_expired_inventories(base_ts)
         self.macro_storm_active = any(self.is_macro_storm_active(base_ts, c) for c in self.coins)
