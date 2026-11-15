@@ -633,10 +633,11 @@ class Crypto5mEngine:
                     other_open_sides.add("DOWN")
 
         # 仅在稳健平衡区挂轻仓折价试探 (结合 OFI 微观动量防单边逆向接飞刀)
-        # 高波动币种 (SOL) 收窄开仓平衡带至 [0.42 ~ 0.58]，折价加深至 5.0¢ 提高安全垫
-        eq_low = 0.42 if inv.coin == "sol" else 0.38
-        eq_high = 0.58 if inv.coin == "sol" else 0.62
-        discount_cents = 0.050 if inv.coin == "sol" else 0.040
+        # v4.2 真空中枢开仓铁律: 全币种统一收紧至 [0.42 ~ 0.58] 紧平衡带，折价加深至 4.5¢
+        # 严禁在市场已明显偏离中枢 (如 0.38 vs 0.62) 时逆势摸顶抄底接飞刀！
+        eq_low = 0.42
+        eq_high = 0.58
+        discount_cents = 0.045
 
         # 若已有其他币种单边持 UP，禁止本币种再开 UP 试探；若已有其他币种持 DOWN，禁止本币种再开 DOWN 试探！
         if "UP" not in other_open_sides and eq_low <= fair_up <= eq_high and ofi_up >= -0.15:

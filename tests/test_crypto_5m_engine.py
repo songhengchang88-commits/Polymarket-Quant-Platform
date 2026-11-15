@@ -34,7 +34,7 @@ def test_anti_toxic_grid_never_bids_above_fair():
         token_up="t_up",
         token_down="t_dn",
     )
-    fair_up, fair_dn = 0.60, 0.40
+    fair_up, fair_dn = 0.55, 0.45
     orders = eng.build_safe_grid(fair_up, fair_dn, inv)
     assert len(orders) > 0
     for od in orders:
@@ -334,6 +334,19 @@ def test_v41_taker_hedge_fill_exemption_from_maker_penalty():
     # 关键断言: 对冲单作为主动 Taker 成功免除 1.8 倍排队惩罚，按击穿档 85% 比例真实撮合 2.55 份！
     assert inv.down_shares == pytest.approx(2.55, abs=0.01)
     assert inv.paired_shares == pytest.approx(2.55, abs=0.01)
+
+
+def test_v42_vacuum_equilibrium_blocks_falling_knife():
+    """验证 v4.2 真空中枢开仓铁律: 当行情偏离中枢 [0.42 ~ 0.58] (如 0.38 vs 0.62) 时，强行禁止逆势开仓接飞刀"""
+    from pmq.crypto_5m_engine import Crypto5mEngine, MarketInventory
+    engine = Crypto5mEngine(coins=['btc'], initial_paper_capital=30.0, persist_ledger=False)
+    inv = MarketInventory(slug='btc-test', coin='btc', base_ts=1000, strike_k=70000.0, token_up='u', token_down='d')
+
+    # 行情已明显偏向上方: fair_up=0.62, fair_dn=0.38
+    orders = engine.build_safe_grid(fair_up=0.62, fair_dn=0.38, inv=inv, rem_sec=200.0)
+    # 关键断言: 严禁在 0.38 挂 DOWN 折价单接飞刀，订单列表必须为空！
+    assert orders == []
+
 
 
 
