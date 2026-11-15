@@ -566,13 +566,13 @@ class Crypto5mEngine:
             elif rem_sec > 110.0:
                 target_cap = 0.96   # 前期超额锁利 (保底留4¢净利空间)
             elif rem_sec > 60.0:
-                target_cap = 1.00   # 中期保本对冲 (平价锁死配对，零亏损)
+                target_cap = 1.04   # 中期微摩擦平价对冲 (允许最多 0.04U / 4% 滑点主动扫单，彻底杜绝单边裸奔)
             else:
-                target_cap = 1.05   # 临近尾盘微摩擦锁死 (最多容忍 0.05 摩擦，彻底杜绝单边裸奔)
+                target_cap = 1.12   # 临近尾盘微摩擦锁死 (最多容忍 0.12 摩擦，彻底杜绝单边裸奔)
 
             max_hedge_dn = round(min(0.96, target_cap - inv.avg_up_cost), 2)
 
-            # v3.9 智能主动吃单机制 (Active Taker Flush):
+            # v4.0 智能自适应吃单机制 (Active Taker Flush):
             # 如果盘口有现成卖单 (best_ask_dn)，且价格在目标上限 target_cap 内，
             # 在 rem_sec <= 110s (时间过半) 时直接以 best_ask_dn 主动吃单，绝不被动排队等死！
             hedge_price = max_hedge_dn
@@ -597,9 +597,9 @@ class Crypto5mEngine:
             elif rem_sec > 110.0:
                 target_cap = 0.96
             elif rem_sec > 60.0:
-                target_cap = 1.00
+                target_cap = 1.04
             else:
-                target_cap = 1.05
+                target_cap = 1.12
 
             max_hedge_up = round(min(0.96, target_cap - inv.avg_down_cost), 2)
 

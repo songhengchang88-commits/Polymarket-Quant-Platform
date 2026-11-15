@@ -298,3 +298,25 @@ def test_v39_active_taker_flush_at_best_ask():
     assert orders[0].shares == 3.0
 
 
+def test_v40_micro_friction_tolerance_salvage():
+    """验证 v4.0 微摩擦容忍机制: 当盘口卖一超出 1.00 保本线但在 1.04 容忍度内时，果断吃单配对，防单边归零"""
+    from pmq.crypto_5m_engine import Crypto5mEngine, MarketInventory
+    engine = Crypto5mEngine(coins=['btc'], initial_paper_capital=30.0, persist_ledger=False)
+    inv = MarketInventory(slug='btc-test', coin='btc', base_ts=1000, strike_k=70000.0, token_up='u', token_down='d')
+    inv.down_shares = 3.0
+    inv.down_cost = 1.47   # avg_down_cost = 0.49
+
+    # 中期 80s (<= 110s): 现货轻微破位，UP卖一 best_ask_up 上涨至 0.53 (两边合计 0.49+0.53 = 1.02U)
+    # v3.9 会因超 1.00 拒单；v4.0 设定 target_cap=1.04 (允许最多 0.04 摩擦)，max_hedge_up = 0.55
+    orders = engine.build_safe_grid(
+        fair_up=0.55, fair_dn=0.45, inv=inv, rem_sec=80.0, best_ask_up=0.53
+    )
+    assert len(orders) == 1
+    assert orders[0].side == "UP"
+    assert orders[0].tag == "hedge"
+    # 关键断言: 成功触发 0.53 主动吃单，锁定 100% 配对，避免 1.47U 绝收！
+    assert orders[0].price == 0.53
+    assert orders[0].shares == 3.0
+
+
+
