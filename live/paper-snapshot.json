@@ -1,22 +1,22 @@
 {
   "schema_version": 1,
-  "updated_at_utc": "2026-11-15T09:44:27Z",
-  "updated_at_cst": "2026-11-15T17:44:27+08:00",
+  "updated_at_utc": "2026-11-15T09:59:59Z",
+  "updated_at_cst": "2026-11-15T17:59:59+08:00",
   "gate": "A",
   "mode": "paper",
   "seed_usd": 200.0,
   "halt_line_usd": 140.0,
-  "round": 520,
-  "nav_usd": 198.118497,
-  "nav_console_usd": 198.118497,
+  "round": 611,
+  "nav_usd": 198.114612,
+  "nav_console_usd": 198.114612,
   "nav_diff_usd": 0.0,
   "cash_usd": 80.13865,
-  "positions_usd": 117.979847,
+  "positions_usd": 117.975962,
   "positions_tokens": 38,
   "positions_at_mid": 36,
   "positions_at_cost": 2,
   "day_start_usd": 203.234252,
-  "day_pnl_usd": -5.115755,
+  "day_pnl_usd": -5.11964,
   "peak_usd": 205.435492,
   "circuit": "DAILY_HALT",
   "halted_reason": "单日亏损达 −2.0%（§6.3）",
@@ -371,19 +371,19 @@
       "valued_by": "mid"
     },
     {
-      "market_id": "3580933",
-      "outcome": "Yes",
-      "shares": 10.0,
-      "mid_usd": 0.3495,
-      "value_usd": 3.495,
-      "valued_by": "mid"
-    },
-    {
       "market_id": "3580932",
       "outcome": "No",
       "shares": 10.0,
       "mid_usd": 0.345,
       "value_usd": 3.45,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "3580933",
+      "outcome": "Yes",
+      "shares": 10.0,
+      "mid_usd": 0.3435,
+      "value_usd": 3.435,
       "valued_by": "mid"
     },
     {
@@ -470,8 +470,8 @@
       "market_id": "690615",
       "outcome": null,
       "shares": 10.0,
-      "mid_usd": 0.055,
-      "value_usd": 0.55,
+      "mid_usd": 0.061,
+      "value_usd": 0.61,
       "valued_by": "mid"
     },
     {
@@ -555,19 +555,19 @@
       "valued_by": "mid"
     },
     {
-      "market_id": "5339986",
-      "outcome": null,
-      "shares": 3.885,
-      "mid_usd": 0.008,
-      "value_usd": 0.03108,
-      "valued_by": "mid"
-    },
-    {
       "market_id": "5163128",
       "outcome": null,
       "shares": 10.0,
       "mid_usd": 0.003,
       "value_usd": 0.03,
+      "valued_by": "mid"
+    },
+    {
+      "market_id": "5339986",
+      "outcome": null,
+      "shares": 3.885,
+      "mid_usd": 0.007,
+      "value_usd": 0.027195,
       "valued_by": "mid"
     },
     {
