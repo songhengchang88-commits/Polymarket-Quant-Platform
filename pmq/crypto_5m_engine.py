@@ -209,6 +209,9 @@ class Crypto5mEngine:
         self.pending_settlements: List[Tuple[float, float, str]] = []  # [(unlock_time, payout_usd, slug)]
         self.macro_storm_active: bool = False
         self._last_live_funds: dict = {}
+        self._funds_configured: bool = False  # 链上资金轮询是否已按 env 地址启动
+        self._funds_proxy_addr: str = ""
+        self._funds_wallet_addr: str = ""
         self.cycle_start_time: float = time.time()
         self.cycle_initial_capital: float = float(initial_paper_capital)
         self.cycle_settled_pnl: float = 0.0
@@ -1122,14 +1125,37 @@ class Crypto5mEngine:
         self.pending_settlements = still_pending
 
     def _start_funds_poller(self):
+        # 链上资金轮询：FUNDER_ADDRESS / WALLET_ADDRESS 必须由环境变量提供，
+        # 不再内置任何默认地址（旧默认值与登记钱包不一致，且会静默查询陌生地址）。
+        # 未配置时报错并放弃轮询，资金状态保持未知，绝不填假数。
+        proxy = os.getenv("FUNDER_ADDRESS")
+        wallet = os.getenv("WALLET_ADDRESS")
+        if not proxy or not wallet:
+            logger.error(
+                "链上资金轮询未启动：FUNDER_ADDRESS / WALLET_ADDRESS 未配置，"
+                "资金状态未知（请在 .env 中配置，勿用默认地址）"
+            )
+            self._funds_configured = False
+            return
+        if not (proxy.startswith("0x") and len(proxy) == 42
+                and wallet.startswith("0x") and len(wallet) == 42):
+            logger.error(
+                "链上资金轮询未启动：FUNDER_ADDRESS / WALLET_ADDRESS 格式非法（须为 0x 开头 42 字符地址）"
+            )
+            self._funds_configured = False
+            return
+        self._funds_configured = True
+        self._funds_proxy_addr = proxy
+        self._funds_wallet_addr = wallet
+
         def _poller_worker():
             rpcs = [
                 "https://polygon-bor-rpc.publicnode.com",
                 "https://polygon.drpc.org",
                 "https://1rpc.io/matic",
             ]
-            proxy = os.getenv("FUNDER_ADDRESS", "0x735e49143B19989E8c2BE88EdE72e96c1d0500dc")
-            wallet = os.getenv("WALLET_ADDRESS", "0x514f13a326a93aeda4522b973707e8602c2bcefd")
+            proxy = self._funds_proxy_addr
+            wallet = self._funds_wallet_addr
             pusd = "0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb"
             data_pusd = "0x70a08231000000000000000000000000" + proxy[2:].lower()
             http_sess = requests.Session()
@@ -1147,6 +1173,7 @@ class Crypto5mEngine:
                         val_pol = int(res_pol["result"], 16) / 1e18
 
                         self._last_live_funds = {
+                            "status": "ok",
                             "proxy_pusd": round(val_pusd, 2),
                             "wallet_pol": round(val_pol, 4),
                             "wallet_addr": wallet,
@@ -1162,15 +1189,17 @@ class Crypto5mEngine:
         t.start()
 
     def _fetch_live_chain_funds(self) -> dict:
+        # 无实时数据时返回“未知”，绝不填默认值（旧代码在此填写写死的假余额
+        # 且 gas_ok=True，已删除）。
+        # 调用方（状态落盘 / HUD）须按未知处理：不展示数字、不判 gas 充足。
         if not self._last_live_funds:
-            wallet = os.getenv("WALLET_ADDRESS", "0x514f13a326a93aeda4522b973707e8602c2bcefd")
-            proxy = os.getenv("FUNDER_ADDRESS", "0x735e49143B19989E8c2BE88EdE72e96c1d0500dc")
-            self._last_live_funds = {
-                "proxy_pusd": 1.72,
-                "wallet_pol": 3.6214,
-                "wallet_addr": wallet,
-                "proxy_addr": proxy,
-                "gas_ok": True,
+            return {
+                "status": "unknown",
+                "proxy_pusd": None,
+                "wallet_pol": None,
+                "wallet_addr": None,
+                "proxy_addr": None,
+                "gas_ok": None,
             }
         return self._last_live_funds
 

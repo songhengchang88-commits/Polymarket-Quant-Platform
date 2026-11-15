@@ -1,3 +1,4 @@
+# SYNC v20261112-1 (public base e5e011a) — source: local release v20261112-1, 2026-11-12 12:17 CST deployed; do NOT overwrite with public-repo version.
 """
 paper_engine.py — 纸面同构做市引擎核心（阶段 2 第一步：纸面引擎）
 
@@ -91,7 +92,8 @@ BAND_SIZE_FACTOR = {"main": 1.0, "watch": 0.5, "paper": 0.5}
 # 【自拟】常量（方案未给数值，待纸面校准；交付说明有总表）
 # ---------------------------------------------------------------------------
 
-SELF_HALF_SPREAD_PCT = 1.0        # 报价半价差 = 中间价 × 1%（总价差约 2%，§5.2 甜区 1–2.5% 内取中）
+SELF_HALF_SPREAD_PCT = 2.5        # 报价半价差 = 中间价 × 2.5%（2026-11-08 参数组 2：根因审计后加宽，见 hardening/strategy-iteration-1.md；旧值 1.0 时捕获/跳变仅 0.40）
+SELF_HALF_TICK_FLOOR_MULT = 2     # 半价差 tick 地板倍数（参数组 2：max(2·tick, mid×pct)；池内多数市场被 tick 地板锁死，地板才是有效旋钮）
 SELF_QUEUE_HAIRCUT = 0.5          # 排队折损：穿越量按 50% 计为可成交量（排在我方前面的队列吃掉一半）
 SELF_TRENDING_WIDEN_MULT = 2.0    # TRENDING 时半价差倍数（§11「加宽」的数值化）
 SELF_TRENDING_SIZE_MULT = 0.5     # TRENDING 时份额倍数（打宽/缩量）
@@ -174,6 +176,7 @@ class _RestingOrder:
     shares_micro: int
     filled_micro: int = 0
     counted_through_micro: int = 0   # 累计已计穿越量（折损后，单调不减）
+    gen_mid_micro: Optional[int] = None   # 报价生成时 mid（双口径 markout 参照，2026-11-08）
 
     @property
     def remaining_micro(self) -> int:
@@ -274,6 +277,7 @@ class PaperEngine:
             "fills_rejected_limit": 0,   # 成交路径被仓位规则拦截计数
             "cancels": 0,
             "markouts_sampled": 0,
+            "markouts_sampled_genmid": 0,   # 生成时 mid 口径样本数（双口径，2026-11-08）
             "markouts_pending_no_book": 0,
             "halts": 0,
         }
@@ -601,6 +605,12 @@ class PaperEngine:
             "token_id": order.token_id, "side": order.side,
             "due_ms": int(now.timestamp() * 1000) + MARKOUT_HORIZON_SEC * 1000,
         }
+        if order.gen_mid_micro is not None:
+            # 双口径 markout 参照（2026-11-08 根因审计处置）：报价生成
+            # 时的 mid 随任务落盘，采样时另记一条 genmid 口径样本，
+            # 闸门主口径以生成时 mid 为准（成交时 mid 起点设在盘口
+            # 跳变之后，会系统性豁免跳变亏损——审计报告 loss-root-cause.md）。
+            task["gen_mid_micro"] = order.gen_mid_micro
         if mid_at_fill_micro is not None:
             task["mid_at_fill_micro"] = mid_at_fill_micro
             task["markout_source"] = "paper_sim"
@@ -649,6 +659,23 @@ class PaperEngine:
     def pending_markouts(self) -> List[Dict]:
         return [dict(t) for t in self._markout_tasks]
 
+    def pending_last_mids(self) -> Dict[str, int]:
+        """最近中间价快照（供 runner 落盘，重启后恢复估值用）。"""
+        return dict(self._last_mid)
+
+    def restore_last_mids(self, mids: Dict[str, int]) -> int:
+        """恢复最近中间价（重启后）：仅接受正整数 micro 值；返回恢复条数。
+        用途见 OI-16：_last_mid 只在内存，重启后离池持仓无 mid 即走
+        成本兜底，净值在重启瞬间凭空跳变（2026-11-08 19:57 UTC 实测
+        −4.14）。恢复上轮 mid 后，重启前后估值口径一致，跳变只来自
+        新鲜行情本身。"""
+        n = 0
+        for token_id, mid in (mids or {}).items():
+            if isinstance(mid, int) and mid > 0:
+                self._last_mid[str(token_id)] = mid
+                n += 1
+        return n
+
     def sample_markouts(self, now: Optional[datetime] = None,
                         books_by_market: Optional[Dict[str, Dict]] = None) -> List[Dict]:
         """对到期（成交后 ≥300s）的 markout 任务采样并写账本。
@@ -679,6 +706,19 @@ class PaperEngine:
                 horizon_sec=MARKOUT_HORIZON_SEC,
                 source=task.get("markout_source", "paper_sim"))
             self.stats["markouts_sampled"] += 1
+            gen_mid = task.get("gen_mid_micro")
+            if gen_mid is not None:
+                # 双口径第二条：同一 horizon 终点 mid、参照换成报价
+                # 生成时 mid（source=paper_sim_genmid）。含成交跳变在
+                # 内的真实每股结果，闸门主口径（2026-11-08 定）。
+                self.ledger.record_markout(
+                    fill_id=task["fill_id"], market_id=task["market_id"],
+                    token_id=task["token_id"], side=task["side"],
+                    mid_at_fill_micro=gen_mid,
+                    mid_at_horizon_micro=mid_now,
+                    horizon_sec=MARKOUT_HORIZON_SEC,
+                    source="paper_sim_genmid")
+                self.stats["markouts_sampled_genmid"] += 1
             sampled.append({"sample_id": sample_id, **task, "mid_now_micro": mid_now})
         self._markout_tasks = remaining
         return sampled
@@ -690,7 +730,8 @@ class PaperEngine:
         return _p2m(tick) if tick else _p2m(SELF_DEFAULT_TICK)
 
     def _place(self, reg: _MarketReg, token_id: str, side: str,
-               price_micro: int, shares_micro: int) -> _RestingOrder:
+               price_micro: int, shares_micro: int,
+               gen_mid_micro: Optional[int] = None) -> _RestingOrder:
         self._seq += 1
         client_id = f"paper-{reg.market['id']}-{self._seq}"
         ledger_id = self.ledger.record_order(
@@ -702,10 +743,17 @@ class PaperEngine:
         order = _RestingOrder(client_order_id=client_id, ledger_order_id=ledger_id,
                               market_id=str(reg.market["id"]), token_id=token_id,
                               side=side, price_micro=price_micro,
-                              shares_micro=shares_micro)
+                              shares_micro=shares_micro,
+                              gen_mid_micro=gen_mid_micro)
         self._resting[client_id] = order
         self.stats["quotes_placed"] += 1
         return order
+
+    def cancel_market_orders(self, market_id: str) -> int:
+        """公开撤单口径（供 runner 在市场离池时清理在挂单）：委托
+        _cancel_market_orders。仅清理本引擎内存态在挂单并同步账本
+        状态，不触碰已成交部分。"""
+        return self._cancel_market_orders(str(market_id))
 
     def _cancel_market_orders(self, market_id: str) -> int:
         n = 0
@@ -743,7 +791,8 @@ class PaperEngine:
             if mid is None:
                 continue
             tick = self._tick_micro(reg, book)
-            half = max(tick, int(mid * self._half_spread_pct / 100.0))
+            half = max(SELF_HALF_TICK_FLOOR_MULT * tick,
+                       int(mid * self._half_spread_pct / 100.0))
             if state == STATE_TRENDING:
                 half = int(half * SELF_TRENDING_WIDEN_MULT)
             base_shares = int(reg.target_shares_micro * size_factor)
@@ -764,7 +813,8 @@ class PaperEngine:
                     amount = price * base_shares // MICRO
                     ok, _reason = self._check_buy(market_id, amount)
                     if ok:
-                        o = self._place(reg, token_id, "BUY", price, base_shares)
+                        o = self._place(reg, token_id, "BUY", price, base_shares,
+                                        gen_mid_micro=mid)
                         placed.append({"order": o.client_order_id, "side": "BUY",
                                        "token_id": token_id, "price_micro": price,
                                        "shares_micro": base_shares})
@@ -780,7 +830,8 @@ class PaperEngine:
                          else mid + half)
                 price = -((-price) // tick) * tick  # 卖价向上取整到 tick
                 price = max(tick, min(price, MICRO - tick))
-                o = self._place(reg, token_id, "SELL", price, sell_shares)
+                o = self._place(reg, token_id, "SELL", price, sell_shares,
+                                gen_mid_micro=mid)
                 placed.append({"order": o.client_order_id, "side": "SELL",
                                "token_id": token_id, "price_micro": price,
                                "shares_micro": sell_shares})
