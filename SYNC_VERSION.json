@@ -1,0 +1,9 @@
+{
+  "sync_version": "v20261112-1",
+  "public_base": "e5e011ab54951427d51fc1e1b3cda244d5e10c44",
+  "public_base_short": "e5e011a",
+  "param_group": "2",
+  "sync_date": "2026-11-15",
+  "local_source_dir": "goals/polymarket-poly/hidden_files/stage1/releases/v20261112-1",
+  "mode": "paper-only staging; NOT live; do not push without review"
+}
