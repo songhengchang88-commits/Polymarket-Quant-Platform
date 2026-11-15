@@ -12,8 +12,16 @@
 2. **[REA 逆向工程与实战法则](docs/memories/rea_reverse_engineering_memory.md)**：万物皆可逆 · morluto/rea · leanrea 切片 · 私有协议与二进制无源码平替。
 3. **[多子系统协同与各自分工规范](docs/memories/subsystems_orchestration.md)**：OpenHands/MetaGPT/CrewAI 集群协同 · 五大子系统矩阵 · Lean Handoff 转交。
 4. **[视听工业与短剧记忆库](docs/memories/ai_music_short_drama_memory.md)**：MoneyPrinterTurbo / VideoLingo / 跨时空视听工业工程。
+5. **[Polymarket 实盘就绪审计与缺陷修复](docs/memories/live_readiness_findings.md)**：系统真实形态（纸面研究态，非已实盘）、13 项已修缺陷、4 项未消除实盘阻塞、复查命令速查。**做 Polymarket 相关任务前必读。**
 
 ---
+
+## ⚠️ Polymarket 项目专属记忆入口
+
+本项目（Polymarket-Quant-Platform）开工前**先读**
+[`docs/memories/live_readiness_findings.md`](docs/memories/live_readiness_findings.md)：
+已修缺陷清单、真实实盘阻塞（geoblock US / USDC $0 / allowance $0 / 执行链路未接线）、
+下一步优先级、以及全部复查命令。
 
 ## 👥 集群各自分工速查 (Subsystem Roles Quick Reference)
 

@@ -145,8 +145,16 @@ def detect(
     costs: CostModel,
     budget_usd: float,
     now: Optional[float] = None,
+    group_key_of: Optional[Any] = None,
 ) -> DetectionReport:
+    """扫描全市场。
+
+    group_key_of: 可选的 (market -> 事件组标识) 取键函数。给了就按事件组累计
+    集中度: 同一 neg-risk 事件组内多个 outcome 按构造相关, 只按总额敞口风控
+    会把一组仓位误判为独立分散。
+    """
     report = DetectionReport(scanned=len(markets))
+    group_used: Dict[str, float] = {}
     for market in markets:
         pair = tokens_of(market)
         if not pair:
@@ -165,6 +173,15 @@ def detect(
         if opp is None:
             report.reject(reason or "无边际")
             continue
+        # 事件组集中度闸门(只在"可执行"的机会上累计, 做市挂单尚未成交不计入)
+        group_key = group_key_of(market) if group_key_of else None
+        if group_key and limits.enforce_group_cap and opp.executable:
+            used = group_used.get(str(group_key), 0.0)
+            add = opp.shares * opp.pair_cost
+            if used + add > limits.max_exposure_per_neg_risk_group_usd + 1e-9:
+                report.reject(f"neg-risk 事件组 {group_key} 敞口超限")
+                continue
+            group_used[str(group_key)] = round(used + add, 4)
         report.opportunities.append(opp)
         if opp.executable:
             report.actionable += 1

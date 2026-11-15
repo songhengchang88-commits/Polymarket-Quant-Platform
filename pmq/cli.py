@@ -63,7 +63,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 def _category(reason: str) -> str:
     """把长原因归到稳定类别, 否则原因分布表会被 leg0/leg1 前缀淹没。"""
-    for key in ("盘口非法", "陈旧", "极端价位", "价差", "交叉", "配对成本", "总敞口", "熔断"):
+    for key in ("盘口非法", "陈旧", "极端价位", "价差", "交叉", "配对成本",
+                "总敞口", "熔断", "neg-risk 事件组"):
         if key in reason:
             return key
     return reason[:24]
@@ -175,7 +176,8 @@ def cmd_detect(args: argparse.Namespace) -> int:
         books = marketdata.fetch_books_bulk(tokens)
         # 取完立刻判断: 陈旧度按"决策时刻 - 拉取时刻"算, 而不是整轮扫描结束时刻
         report.merge(detector.detect(block, books, marketdata.extract_tokens,
-                                     limits, costs, args.budget, now=time.time()))
+                                     limits, costs, args.budget, now=time.time(),
+                                     group_key_of=lambda m: m.get("condition_id")))
     elapsed = time.time() - started
 
     print(f"市场数 {report.scanned} | 有盘口 {report.with_books} | 可立即执行 {report.actionable} | 用时 {elapsed:.1f}s")

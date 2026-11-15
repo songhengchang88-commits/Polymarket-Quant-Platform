@@ -33,28 +33,36 @@ except Exception:
             GTC = "GTC"
 
 
-def make_order_args(token_id: str, price: float, size: float, side: str, fee_rate_bps: int = 0) -> Any:
-    """根据实际安装的 SDK 动态生成兼容的 OrderArgs 对象，严格对齐 Polymarket CLOB 官方精度硬约束:
-    - price: 最多 3 位小数 (0.001 tick)
-    - size: 严格对齐，使 BUY 订单的 maker amount (price * size) 绝不超过 2 位小数，彻底消除 invalid amounts 400 报错！
+def make_order_args(
+    token_id: str,
+    price: float,
+    size: float,
+    side: str,
+    fee_rate_bps: int = 0,
+    tick: float = 0.01,
+) -> Any:
+    """根据实际安装的 SDK 动态生成兼容的 OrderArgs 对象。
+
+    与 Polymarket CLOB 官方取整规则严格对齐 (见 py_clob_client_v2.order_builder.builder):
+    - price: 按 tick 位数 round_normal;
+    - size: 一律 2 位小数且 **round_down**。本地若把 3.0612 份直接下发, SDK 会砍成 3.06,
+      账本份数与真实成交份数错位 —— 所以这里本地先同样向下取整;
+    - maker amount (price * size) 必须在官方允许位数内可精确表示, 否则 SDK 自行 round 会导致真实成交价漂移。
+      注意: 官方对 tick 0.01 允许 4 位小数, 并不存在"maker amount 必须 2 位小数(美分)"这条约束。
     """
     import math
+    from pmq.risk import clob_amount_decimals, _amount_representable
+
     if OrderArgs is None:
         raise RuntimeError("py_clob_client 未安装")
     safe_price = round(float(price), 3)
-    safe_size = round(float(size), 4)
+    safe_size = math.floor(round(float(size), 6) * 100.0 + 1e-9) / 100.0
 
-    # 官方铁律防御: 对于 BUY 订单，maker amount (price * size) 必须严格 <= 2 位小数
-    if str(side).upper() == "BUY":
-        raw_cost = round(safe_price * safe_size, 6)
-        if round(raw_cost, 2) != raw_cost:
-            # 向下修约至整份或纯美分无损份数
-            int_s = math.floor(safe_size)
-            if int_s > 0 and round(round(safe_price * int_s, 6), 2) == round(safe_price * int_s, 6):
-                safe_size = float(int_s)
-            else:
-                cents = math.floor(raw_cost * 100) / 100.0
-                safe_size = round(cents / safe_price, 4)
+    # 防御性兜底: maker amount 必须能在官方位数上限内精确表示
+    amount_decimals = clob_amount_decimals(tick)
+    if not _amount_representable(safe_size, safe_price, amount_decimals):
+        cents = math.floor(safe_price * safe_size * (10 ** amount_decimals) + 1e-9) / (10 ** amount_decimals)
+        safe_size = max(0.01, math.floor(cents / max(safe_price, 1e-9) * 100.0 + 1e-9) / 100.0)
 
     try:
         # V2: OrderArgsV2(token_id=..., price=..., size=..., side=...)
@@ -97,11 +105,44 @@ class ExecutionResult:
 
 
 class AtomicPairExecutor:
-    def __init__(self, client, journal=None, costs: Optional[CostModel] = None, limits: Optional[risk.Limits] = None):
+    def __init__(self, client, journal=None, costs: Optional[CostModel] = None,
+                 limits: Optional[risk.Limits] = None, deadman: Optional[Any] = None):
         self.client = client
         self.journal = journal
         self.costs = costs or CostModel()
         self.limits = limits or risk.Limits()
+        # 平仓(救险)重试次数与每次追价让利步长, 可配置以便实盘调参
+        self.unwind_attempts = 3
+        self.unwind_tick_chase = 0.005
+        # 死人开关(可选): 每次双腿成交后喂狗; 崩溃/卡死时由看门狗拉响紧急撤单
+        self.deadman = deadman
+        # neg-risk 事件组敞口台账: 按 condition_id 累计已锁定的美元敞口。
+        # 只按总额敞口风控会把同一事件组下的多组仓位误判为独立分散。
+        self.group_exposure_usd: Dict[str, float] = {}
+        # 外部注入的基准敞口(例如上游持仓对账结果), 作为台账的起算基线
+        self.group_exposure_baseline_usd: Dict[str, float] = {}
+
+    def set_group_exposure_baseline(self, group_key: str, usd: float) -> None:
+        """登记事件组的既有敞口(来自链上对账), 台账从此基线起算。"""
+        key = group_key or ""
+        if not key:
+            return
+        self.group_exposure_baseline_usd[key] = float(usd)
+
+    def current_group_exposure(self, group_key: str) -> float:
+        """某事件组当前敞口 = 注入基线 + 本执行器已锁定的增量。"""
+        key = group_key or ""
+        if not key:
+            return 0.0
+        return (self.group_exposure_baseline_usd.get(key, 0.0)
+                + self.group_exposure_usd.get(key, 0.0))
+
+    def release_group_exposure(self, group_key: str, usd: float) -> None:
+        """释放已结算/已平仓的事件组敞口。"""
+        key = group_key or ""
+        if not key:
+            return
+        self.group_exposure_usd[key] = max(0.0, self.group_exposure_usd.get(key, 0.0) - float(usd))
 
     # ---------------- 基础设施 ----------------
     def _log(self, event: Dict[str, Any]) -> Dict[str, Any]:
@@ -112,13 +153,13 @@ class AtomicPairExecutor:
                 pass
         return event
 
-    def _buy_fok(self, token_id: str, price: float, size: float) -> Any:
-        args = make_order_args(token_id=token_id, price=price, size=size, side="BUY")
+    def _buy_fok(self, token_id: str, price: float, size: float, tick: float = 0.01) -> Any:
+        args = make_order_args(token_id=token_id, price=price, size=size, side="BUY", tick=tick)
         signed = self.client.create_order(args)
         return self.client.post_order(signed, OrderType.FOK)
 
-    def _sell_fak(self, token_id: str, price: float, size: float) -> Any:
-        args = make_order_args(token_id=token_id, price=price, size=size, side="SELL")
+    def _sell_fak(self, token_id: str, price: float, size: float, tick: float = 0.01) -> Any:
+        args = make_order_args(token_id=token_id, price=price, size=size, side="SELL", tick=tick)
         signed = self.client.create_order(args)
         return self.client.post_order(signed, OrderType.FAK)
 
@@ -196,33 +237,57 @@ class AtomicPairExecutor:
             self._log({"type": "PANIC_CANCEL_FAILED", "error": str(exc)[:300]})
             return False
 
-    def _unwind(self, token_id: str, shares: float, bid: float) -> bool:
-        """把已成交的单腿按买一价 FAK 卖出, 尽量消除敞口。带 3 次重试与精度对齐保底。"""
+    def _unwind(self, token_id: str, shares: float, bid: float, tick: float = 0.01) -> float:
+        """把已成交的单腿按买一价 FAK 卖出, 尽量消除敞口。
+
+        **返回实际平掉的份额(float), 而不是 bool**:
+        FAK 允许部分成交, 只要还有残余份数, 就必须如实上报为裸敞口。
+        旧实现只要"有任何一份成交"就返回 True, 调用方据此把 unhedged_shares 写成 0,
+        等于把残余裸敞口悄悄抹掉 —— 这是实盘最危险的"安全假象"。
+        带 3 次重试与精度对齐保底。
+        """
+        import math
+
         if shares <= EPS:
-            return False
-        
-        # 强制将份额修约到 2 位小数，防止 invalid amounts 精度报错
-        safe_shares = round(shares, 2)
+            return 0.0
+
+        # 强制将份额向下修约到 2 位小数(官方 round_down), 防止 invalid amounts 精度报错,
+        # 同时绝不向上进位 —— 卖出超过实际持有份数会被拒单甚至造成卖空。
+        safe_shares = math.floor(round(shares, 6) * 100.0 + 1e-9) / 100.0
         if safe_shares <= EPS:
-            return False
+            return 0.0
 
         # 买一价兜底: 若传入的 bid 为 0，使用极小兜底价 0.01 强行平仓避险
         safe_bid = round(max(0.01, bid), 3)
 
-        for attempt in range(3):
+        remaining = safe_shares
+        unwound_total = 0.0
+        for attempt in range(self.unwind_attempts):
+            if remaining <= EPS:
+                break
             try:
                 # 尝试以 safe_bid 或稍微让利 1 个 tick 保证秒成交
-                sell_price = round(max(0.01, safe_bid - attempt * 0.005), 3)
-                resp = self._sell_fak(token_id, sell_price, safe_shares)
-                filled, _, _ = self._parse_fill(resp, safe_shares)
+                sell_price = round(max(0.01, safe_bid - attempt * self.unwind_tick_chase), 3)
+                resp = self._sell_fak(token_id, sell_price, remaining, tick=tick)
+                filled, _, _ = self._parse_fill(resp, remaining)
                 if filled > EPS:
-                    self._log({"type": "UNWIND_SUCCESS", "token_id": token_id, "shares": filled, "attempt": attempt+1})
-                    return True
+                    filled = min(float(filled), remaining)
+                    unwound_total += filled
+                    remaining = round(remaining - filled, 6)
+                    self._log({"type": "UNWIND_SUCCESS", "token_id": token_id,
+                               "shares": filled, "remaining": remaining, "attempt": attempt + 1})
+                else:
+                    self._log({"type": "UNWIND_EMPTY", "token_id": token_id,
+                               "attempt": attempt + 1, "remaining": remaining})
             except Exception as e:
-                self._log({"type": "UNWIND_RETRY_ERR", "attempt": attempt+1, "error": str(e)[:200]})
+                self._log({"type": "UNWIND_RETRY_ERR", "attempt": attempt + 1, "error": str(e)[:200]})
                 time.sleep(0.3)
 
-        return False
+        if remaining > EPS:
+            # 如实记录残余敞口, 绝不因为"有成交"就宣称已完全补偿
+            self._log({"type": "UNWIND_INCOMPLETE", "token_id": token_id,
+                       "unwound": round(unwound_total, 6), "residual": remaining})
+        return round(unwound_total, 6)
 
     # ---------------- 主流程 ----------------
     def execute(
@@ -236,18 +301,19 @@ class AtomicPairExecutor:
         now: Optional[float] = None,
         exposure_usd: float = 0.0,
         daily_pnl: float = 0.0,
+        group_key: Optional[str] = None,
     ) -> ExecutionResult:
         now = time.time() if now is None else now
         try:
             return self._execute(market_id, token_0, token_1, book_0, book_1,
-                                 budget_usd, now, exposure_usd, daily_pnl)
+                                 budget_usd, now, exposure_usd, daily_pnl, group_key)
         except Exception as exc:  # 绝不让异常穿透到扫描循环
             result = ExecutionResult(status="ERROR", reasons=[f"{type(exc).__name__}: {exc}"])
             self._log({"type": "ERROR", "market_id": market_id, "error": str(exc)})
             return result
 
     def _execute(self, market_id, token_0, token_1, book_0, book_1,
-                 budget_usd, now, exposure_usd, daily_pnl) -> ExecutionResult:
+                 budget_usd, now, exposure_usd, daily_pnl, group_key=None) -> ExecutionResult:
 
         gate = risk.check_pair(book_0, book_1, self.limits, now, exposure_usd, daily_pnl)
         if not gate.ok:
@@ -266,9 +332,22 @@ class AtomicPairExecutor:
             self._log({"type": "REJECT", "market_id": market_id, "reasons": why})
             return ExecutionResult(status="REJECTED", reasons=why)
 
+        # neg-risk 事件组集中度闸门: 必须等份数算出来才能算本笔的美元占用,
+        # 所以放在 check_pair 之后单独判一次(而非塞进 check_pair 里拿不到份数)。
+        if group_key:
+            cur = self.current_group_exposure(group_key)
+            add = risk.group_add_usd(shares, p0, p1)
+            if not risk.group_limit_ok(group_key, cur, add, self.limits):
+                reason = (f"neg-risk 事件组 {group_key} 敞口 {cur + add:.2f} > "
+                          f"上限 {self.limits.max_exposure_per_neg_risk_group_usd} "
+                          f"(已占用 {cur:.2f} + 本笔 {add:.2f})")
+                self._log({"type": "REJECT", "market_id": market_id,
+                           "group_key": group_key, "reasons": [reason]})
+                return ExecutionResult(status="REJECTED", reasons=[reason])
+
         # ---- 第一腿 ----
         try:
-            resp_0 = self._buy_fok(token_0, p0, shares)
+            resp_0 = self._buy_fok(token_0, p0, shares, book_0.tick)
         except Exception as exc:
             # 超时不等于失败: 交易所可能已经收单。必须全撤并标记 UNKNOWN。
             self._panic_cancel_all()
@@ -301,46 +380,53 @@ class AtomicPairExecutor:
                     return ExecutionResult(status="ABORTED", reasons=[reason],
                                            order_ids={"leg0": oid_0})
             # 部分成交 -> 立即尝试平掉, 避免裸持
-            hedged = self._unwind(token_0, filled_0, book_0.bid)
+            unwound = self._unwind(token_0, filled_0, book_0.bid, tick=book_0.tick)
+            residual = round(max(0.0, filled_0 - unwound), 6)
             self._log({"type": "PARTIAL", "market_id": market_id, "leg": 0,
-                       "filled": filled_0, "unwound": hedged, "reasons": [reason]})
+                       "filled": filled_0, "unwound": unwound, "residual": residual, "reasons": [reason]})
             return ExecutionResult(
-                status="COMPENSATED" if hedged else "UNHEDGED",
+                status="COMPENSATED" if residual <= EPS else "UNHEDGED",
                 filled_shares=filled_0,
-                unhedged_shares=0.0 if hedged else filled_0,
+                unhedged_shares=residual,
                 order_ids={"leg0": oid_0},
-                reasons=[reason] + (["已按买一价平掉"] if hedged else ["平仓失败, 存在裸敞口"]),
+                reasons=[reason] + (["已按买一价平掉"] if residual <= EPS
+                                    else [f"平仓不彻底, 仍存裸敞口 {residual:.2f} 份"]),
             )
 
         # ---- 第二腿 ----
         try:
-            resp_1 = self._buy_fok(token_1, p1, shares)
+            resp_1 = self._buy_fok(token_1, p1, shares, book_1.tick)
         except Exception as exc:
-            hedged = self._unwind(token_0, filled_0, book_0.bid)
+            unwound = self._unwind(token_0, filled_0, book_0.bid, tick=book_0.tick)
+            residual = round(max(0.0, filled_0 - unwound), 6)
             self._log({"type": "LEG2_FAIL", "market_id": market_id, "error": str(exc),
-                       "unwound": hedged})
+                       "unwound": unwound, "residual": residual})
             return ExecutionResult(
-                status="COMPENSATED" if hedged else "UNHEDGED",
+                status="COMPENSATED" if residual <= EPS else "UNHEDGED",
                 filled_shares=filled_0,
-                unhedged_shares=0.0 if hedged else filled_0,
+                unhedged_shares=residual,
                 order_ids={"leg0": oid_0},
-                reasons=[f"leg1 异常: {exc}"],
+                reasons=[f"leg1 异常: {exc}"] + ([] if residual <= EPS
+                                                else [f"平仓不彻底, 仍存裸敞口 {residual:.2f} 份"]),
             )
 
         filled_1, status_1, oid_1 = self._parse_fill(resp_1, shares)
         if filled_1 < shares - EPS:
             self._cancel_quiet(oid_1)
             unhedged = max(0.0, filled_0 - filled_1)
-            hedged = self._unwind(token_0, unhedged, book_0.bid) if unhedged > EPS else True
+            unwound = self._unwind(token_0, unhedged, book_0.bid, tick=book_0.tick) if unhedged > EPS else 0.0
+            residual = round(max(0.0, unhedged - unwound), 6)
             reason = f"leg1 未足额成交 {filled_1}/{shares} (status={status_1})"
             self._log({"type": "IMBALANCE", "market_id": market_id,
-                       "filled_0": filled_0, "filled_1": filled_1, "unwound": hedged})
+                       "filled_0": filled_0, "filled_1": filled_1,
+                       "unwound": unwound, "residual": residual})
             return ExecutionResult(
-                status="COMPENSATED" if hedged else "UNHEDGED",
+                status="COMPENSATED" if residual <= EPS else "UNHEDGED",
                 filled_shares=min(filled_0, filled_1),
-                unhedged_shares=0.0 if hedged else unhedged,
+                unhedged_shares=residual,
                 order_ids={"leg0": oid_0, "leg1": oid_1},
-                reasons=[reason],
+                reasons=[reason] + ([] if residual <= EPS
+                                    else [f"平仓不彻底, 仍存裸敞口 {residual:.2f} 份"]),
             )
 
         # ---- 双腿成交: 用真实成交价核算 ----
@@ -372,4 +458,36 @@ class AtomicPairExecutor:
             "locked_edge_usd": result.locked_edge_usd,
             "order_ids": result.order_ids,
         })
+        # 成交即把该事件组敞口记入台账, 后续同组订单据此判断是否还能再加
+        if group_key:
+            self.group_exposure_usd[group_key] = round(
+                self.group_exposure_usd.get(group_key, 0.0)
+                + risk.group_add_usd(matched, p0, p1), 4)
+        # 双腿成交 = 主循环活着, 喂一次狗; 长时间不再喂狗则看门狗会拉响紧急撤单
+        self._feed_deadman()
         return result
+
+    # ---- 死人开关联动 ----
+    def _feed_deadman(self) -> None:
+        """喂死人开关。未注入开关时静默跳过(纸面/测试环境无需它)。"""
+        guard = getattr(self, "deadman", None)
+        if guard is None:
+            return
+        try:
+            guard.heartbeat()
+        except Exception as exc:
+            self._log({"type": "DEADMAN_HEARTBEAT_ERR", "error": str(exc)[:200]})
+
+    def stop(self) -> None:
+        """优雅停机: 撤单并停发心跳, 且**不**被误当成"进程死亡"。
+
+        实盘入口必须在 finally 里调用它, 否则 atexit 会把计划内停机按 PROCESS_ATEXIT
+        处理, 日志里出现误导性的紧急撤单告警。
+        """
+        guard = getattr(self, "deadman", None)
+        if guard is None:
+            return
+        try:
+            guard.stop()
+        except Exception as exc:
+            self._log({"type": "DEADMAN_STOP_ERR", "error": str(exc)[:200]})

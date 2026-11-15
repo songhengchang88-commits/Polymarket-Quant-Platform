@@ -12,6 +12,12 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENV_PATH = os.path.join(ROOT_DIR, ".env")
 load_dotenv(ENV_PATH)
 
+# 修复实盘致命坑: 进程级 NO_PROXY 含 [::1] 时, py_clob_client 的 httpx 客户端一 import 就崩。
+# 必须在 import httpx / py_clob_client 之前执行。
+sys.path.insert(0, ROOT_DIR)
+from pmq.netclean import sanitize_proxy_env  # noqa: E402
+sanitize_proxy_env()
+
 def mask_addr(addr: str) -> str:
     if not addr or len(addr) < 10:
         return "[未配置]"

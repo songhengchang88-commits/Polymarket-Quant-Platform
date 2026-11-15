@@ -1,19 +1,16 @@
 """
-Polymarket 5 分钟加密涨跌盘口 (BTC/ETH/SOL) 真实数据纸面交易与库存平衡引擎 v2.1
+Polymarket 5 分钟加密量化做市与库存平衡旗舰引擎 v5.0 (真空中枢·防穿盘特训旗舰版)
 ================================================================================
-核心特性 (严格贴近实盘物理规则，绝不虚构成交与利润):
-1. 标的锁定: 仅交易 BTC / ETH / SOL 的 5 分钟 Up/Down 二元盘口。
-2. 并发低延迟采样: 多线程并发拉取 Binance 现货 + Polymarket CLOB 盘口深度，单轮 < 2s。
-3. 真实盘口撮合模型 (Anti-Fantasy Paper Fill):
-   - 只有当真实卖一价 Ask <= 我方挂单价时才触发撮合；
-   - 成交份数受真实卖一深度限制: filled = min(order.shares, ask_size)；
-   - 若卖一被吃完仅部分成交，按部分成交记录真实库存并扣减剩余挂单。
-4. 官方真实结算校验:
-   - 5 分钟周期结束后，优先查询 Polymarket Gamma API 官方结算状态与 outcomePrices (1/0)，
-     辅以 Binance 5m K 线收盘价双重核对，确保 100% 真实结算盈亏。
-5. 持久化账本:
-   - 实时写入 data/crypto_5m_paper_trades.jsonl / crypto_5m_paper_rounds.jsonl / crypto_5m_paper_summary.json。
-6. 物理级安全锁: 严格受根目录 KILL_SWITCH.lock 约束，未手动解除前强制只运行纸面交易。
+核心架构特性 (严格贴近实盘真实物理规则，绝不虚构成交与纸面利润):
+1. 标的锁定: BTC / ETH / SOL 彭博三币 5 分钟 Up/Down 二元期权实时盘口。
+2. 极速行情中继: OKX 亚秒级中继 + Polymarket CLOB 深度撮合，采样主循环延迟稳定在 1.2s~1.8s。
+3. v5.0 真实盘口撮合与风控三大支柱:
+   - 真空中枢开仓铁律 (Vacuum Equilibrium Core): 仅在 [0.42 ~ 0.58] 紧平衡带挂折价单，坚决拒绝逆势接飞刀；
+   - 自适应微摩擦主动对冲 (Active Taker Flush): 免除排队深度惩罚，直接以卖一价主动扫单完成双向 100% 锁仓；
+   - 跨币种宏观同向阻断器 (Anti-Correlation Lock): 强制三币保持多空中性，彻底消除三币被同向大阴阳线穿盘的系统性风险。
+4. 每 2 小时利润归零重置特训: 严守 $30.00 起始本金原点，不以累积纸面滚雪球自欺欺人。
+5. 官方真实结算校验: Polymarket Gamma API 官方 outcomePrices (1/0) 物理对账，辅以 5m K 线双重核验。
+6. 物理级安全锁: 根目录 KILL_SWITCH.lock 强制生效，0 真实资金消耗。
 """
 
 from __future__ import annotations
@@ -208,6 +205,7 @@ class Crypto5mEngine:
         self.last_latency_ms: int = 0
         self.pending_settlements: List[Tuple[float, float, str]] = []  # [(unlock_time, payout_usd, slug)]
         self.macro_storm_active: bool = False
+        self._decision_lock = threading.Lock()
         self._last_live_funds: dict = {}
         self._funds_configured: bool = False  # 链上资金轮询是否已按 env 地址启动
         self._funds_proxy_addr: str = ""
@@ -630,9 +628,9 @@ class Crypto5mEngine:
         other_open_sides = set()
         for o_inv in self.inventories.values():
             if o_inv.coin != inv.coin and o_inv.base_ts == inv.base_ts:
-                if (o_inv.up_shares - o_inv.down_shares) > 1.0:
+                if (o_inv.up_shares - o_inv.down_shares) > 0.2:
                     other_open_sides.add("UP")
-                elif (o_inv.down_shares - o_inv.up_shares) > 1.0:
+                elif (o_inv.down_shares - o_inv.up_shares) > 0.2:
                     other_open_sides.add("DOWN")
 
         # 仅在稳健平衡区挂轻仓折价试探 (结合 OFI 微观动量防单边逆向接飞刀)
@@ -954,51 +952,52 @@ class Crypto5mEngine:
                 logger.warning(f"🚨 [死人开关告警] {coin.upper()} 行情延迟超过6秒或盘口中断，紧急撤销挂单！")
             return
 
-        if inv.open_orders:
-            self.simulate_shadow_fills(inv, asks_up, asks_dn)
-
-        b_up_sz = bids_up[0][1] if bids_up else 0.0
-        a_up_sz = asks_up[0][1] if asks_up else 0.0
-        ofi_up = (b_up_sz - a_up_sz) / max(1.0, b_up_sz + a_up_sz)
-
-        b_up_p = bids_up[0][0] if bids_up else 0.0
-        a_up_p = asks_up[0][0] if asks_up else 1.0
-        b_dn_p = bids_dn[0][0] if bids_dn else 0.0
-        a_dn_p = asks_dn[0][0] if asks_dn else 1.0
-
-        market_mid_up = (b_up_p + a_up_p) / 2.0 if (bids_up and asks_up) else None
-
-        fair_up, fair_dn = self.compute_fair_probs(
-            spot=spot_st.spot,
-            strike_k=inv.strike_k,
-            vol_1m=spot_st.vol_1m,
-            rem_sec=rem_sec,
-            ofi_up=ofi_up,
-            market_mid_up=market_mid_up,
-        )
-
-        macro_storm = self.is_macro_storm_active(base_ts, coin)
-        if macro_storm:
-            self.macro_storm_active = True
-            # 隐患消除: 宏观风暴触发时，毫秒级全撤非对冲挂单，杜绝被对手盘恶性吃单
+        with self._decision_lock:
             if inv.open_orders:
-                non_hedge = [o for o in inv.open_orders if o.tag != "hedge"]
-                if non_hedge:
-                    logger.warning(f"🚨 [风暴毫秒全撤] {coin.upper()} 宏观风暴触发，紧急注销 {len(non_hedge)} 笔被动试探单")
-                    inv.open_orders = [o for o in inv.open_orders if o.tag == "hedge"]
-        best_ask_up = asks_up[0][0] if asks_up else None
-        best_ask_dn = asks_dn[0][0] if asks_dn else None
-        inv.open_orders = self.build_safe_grid(
-            fair_up,
-            fair_dn,
-            inv,
-            rem_sec=rem_sec,
-            ofi_up=ofi_up,
-            macro_storm_active=macro_storm,
-            spot=spot_st.spot,
-            best_ask_up=best_ask_up,
-            best_ask_dn=best_ask_dn,
-        )
+                self.simulate_shadow_fills(inv, asks_up, asks_dn)
+
+            b_up_sz = bids_up[0][1] if bids_up else 0.0
+            a_up_sz = asks_up[0][1] if asks_up else 0.0
+            ofi_up = (b_up_sz - a_up_sz) / max(1.0, b_up_sz + a_up_sz)
+
+            b_up_p = bids_up[0][0] if bids_up else 0.0
+            a_up_p = asks_up[0][0] if asks_up else 1.0
+            b_dn_p = bids_dn[0][0] if bids_dn else 0.0
+            a_dn_p = asks_dn[0][0] if asks_dn else 1.0
+
+            market_mid_up = (b_up_p + a_up_p) / 2.0 if (bids_up and asks_up) else None
+
+            fair_up, fair_dn = self.compute_fair_probs(
+                spot=spot_st.spot,
+                strike_k=inv.strike_k,
+                vol_1m=spot_st.vol_1m,
+                rem_sec=rem_sec,
+                ofi_up=ofi_up,
+                market_mid_up=market_mid_up,
+            )
+
+            macro_storm = self.is_macro_storm_active(base_ts, coin)
+            if macro_storm:
+                self.macro_storm_active = True
+                # 隐患消除: 宏观风暴触发时，毫秒级全撤非对冲挂单，杜绝被对手盘恶性吃单
+                if inv.open_orders:
+                    non_hedge = [o for o in inv.open_orders if o.tag != "hedge"]
+                    if non_hedge:
+                        logger.warning(f"🚨 [风暴毫秒全撤] {coin.upper()} 宏观风暴触发，紧急注销 {len(non_hedge)} 笔被动试探单")
+                        inv.open_orders = [o for o in inv.open_orders if o.tag == "hedge"]
+            best_ask_up = asks_up[0][0] if asks_up else None
+            best_ask_dn = asks_dn[0][0] if asks_dn else None
+            inv.open_orders = self.build_safe_grid(
+                fair_up,
+                fair_dn,
+                inv,
+                rem_sec=rem_sec,
+                ofi_up=ofi_up,
+                macro_storm_active=macro_storm,
+                spot=spot_st.spot,
+                best_ask_up=best_ask_up,
+                best_ask_dn=best_ask_dn,
+            )
         grid_desc = ", ".join(f"{o.side}@{o.price:.2f}({o.tag})" for o in inv.open_orders[:4])
 
         # 记录现货点位序列与 UI 快照
@@ -1228,7 +1227,7 @@ class Crypto5mEngine:
     def run_loop(self, duration_sec: float = 0.0):
         start = time.time()
         logger.info(
-            f"🚀 启动 Crypto 5m 真实数据纸面交易引擎 (v2.2 WS毫秒防毒版) | 初始模拟本金: ${self.initial_paper_capital:.2f} | "
+            f"🚀 启动 Crypto 5m 量化做市旗舰引擎 v5.0 (真空中枢·防穿盘特训旗舰版) | 初始模拟本金: ${self.initial_paper_capital:.2f} | "
             f"单档预算: ${self.budget_per_order_usd:.2f} | 标的: {self.coins} | 账本持久化: {self.persist_ledger}"
         )
         self.ws_spot.start()

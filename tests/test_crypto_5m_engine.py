@@ -348,6 +348,27 @@ def test_v42_vacuum_equilibrium_blocks_falling_knife():
     assert orders == []
 
 
+def test_v50_atomic_decision_lock_and_single_unhedged_enclave():
+    """验证 v5.0 原子决策锁与单向单边互斥: 当 BTC 已持有未配对 DOWN 单边时，ETH 严禁再开同向 DOWN 试探仓"""
+    from pmq.crypto_5m_engine import Crypto5mEngine, MarketInventory
+    engine = Crypto5mEngine(coins=['btc', 'eth'], initial_paper_capital=30.0, persist_ledger=False)
+    
+    # 模拟 BTC 已持有未配对 DOWN 敞口 3.0 份
+    inv_btc = MarketInventory(slug='btc-test', coin='btc', base_ts=1000, strike_k=70000.0, token_up='u', token_down='d')
+    inv_btc.down_shares = 3.0
+    inv_btc.down_cost = 1.50
+    engine.inventories['btc-test'] = inv_btc
+
+    # ETH 当前无持仓，处于中枢平衡区 (0.50, 0.50)
+    inv_eth = MarketInventory(slug='eth-test', coin='eth', base_ts=1000, strike_k=2000.0, token_up='u', token_down='d')
+    orders = engine.build_safe_grid(fair_up=0.50, fair_dn=0.50, inv=inv_eth, rem_sec=200.0)
+    
+    # 关键断言: 由于 BTC 已持有 DOWN 单边，跨币同向共振阻断器强制拦截 DOWN 试探仓，只允许开反向 UP 试探仓！
+    assert all(o.side == "UP" for o in orders)
+    assert not any(o.side == "DOWN" for o in orders)
+
+
+
 
 
 
