@@ -62,8 +62,8 @@ def test_inventory_cross_time_hedge_cap():
     assert all(o.side == "DOWN" for o in orders)
     hedge_orders = [o for o in orders if o.side == "DOWN" and o.tag == "hedge"]
     assert len(hedge_orders) == 1
-    # v5.5 平价微摩擦对冲上限 1.02 - 0.55 = 0.47 -> 绝不超过 0.47，且份数精确匹配未配对份数 10.0
-    assert hedge_orders[0].price <= 0.47 + 1e-9
+    # v5.6 平价微摩擦对冲上限 1.04 - 0.55 = 0.49 -> 绝不超过 0.49，且份数精确匹配未配对份数 10.0
+    assert hedge_orders[0].price <= 0.49 + 1e-9
     assert hedge_orders[0].shares == pytest.approx(10.0)
 
 

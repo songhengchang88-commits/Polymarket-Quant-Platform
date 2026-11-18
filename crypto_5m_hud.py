@@ -26,7 +26,7 @@ ROUNDS_PATH = os.path.join(DATA_DIR, "crypto_5m_paper_rounds.jsonl")
 TRADES_PATH = os.path.join(DATA_DIR, "crypto_5m_paper_trades.jsonl")
 SUMMARY_PATH = os.path.join(DATA_DIR, "crypto_5m_paper_summary.json")
 
-app = FastAPI(title="PolyQuant 5分钟高频做市指挥舰 v5.5 (黄金窗口闪电吃单·断尾双闭环旗舰版)")
+app = FastAPI(title="PolyQuant 5分钟高频做市指挥舰 v5.6 (深度穿透扫单·硬顶收敛旗舰版)")
 
 
 def _read_json(path: str, default: dict) -> dict:
@@ -73,7 +73,7 @@ HTML_PAGE = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>PolyQuant 5分钟高频做市指挥舰 v5.5 (黄金窗口闪电吃单·断尾双闭环旗舰版)</title>
+  <title>PolyQuant 5分钟高频做市指挥舰 v5.6 (深度穿透扫单·硬顶收敛旗舰版)</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     body {

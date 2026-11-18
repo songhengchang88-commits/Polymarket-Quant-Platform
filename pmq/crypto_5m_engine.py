@@ -1,5 +1,5 @@
 """
-Polymarket 5 分钟加密量化做市与库存平衡旗舰引擎 v5.5 (黄金窗口闪电吃单·断尾双闭环旗舰版)
+Polymarket 5 分钟加密量化做市与库存平衡旗舰引擎 v5.6 (深度穿透扫单·硬顶收敛旗舰版)
 ================================================================================
 核心架构特性 (严格贴近实盘真实物理规则，绝不虚构成交与纸面利润):
 1. 标的锁定: BTC / ETH / SOL 彭博三币 5 分钟 Up/Down 二元期权实时盘口。
@@ -566,32 +566,26 @@ class Crypto5mEngine:
 
         # 情况 A: 当前持有未配对 UP 敞口 -> 强制锁死 UP，专心 1:1 对冲锁定 DOWN
         if unpaired_up > 0.1:
-            # v5.5 黄金窗口闪电吃单对冲引擎 (Flash Golden Taker Hedge):
-            # 无论处于哪个阶段，只要当前市场上存在真实 DOWN 卖一价 best_ask_dn，
-            # 且满足 inv.avg_up_cost + best_ask_dn <= 1.04 (允许最多 4¢ 微摩擦平价锁仓，甚至无风险锁利):
-            # 坚决杜绝低价排队！直接以 best_ask_dn 主动 Taker 扫单完成 100% 满额对冲！
-            is_golden_flush = (best_ask_dn is not None and (inv.avg_up_cost + best_ask_dn) <= 1.04)
-
-            if is_golden_flush:
-                target_cap = round(inv.avg_up_cost + best_ask_dn, 2)
-                max_allowed_ask = best_ask_dn
-            elif rem_sec <= 35.0:
-                target_cap = 1.28   # 尾盘极值救险 (<= 35s): 允许必要摩擦锁死，绝不放任 100% 裸奔
+            # v5.6 深度穿透与契约自适应对冲引擎 (Adaptive Contract-Aligned Citadel):
+            # 严格控制双边总成本上限，杜绝无效等待，盘口卖一满足上限时直接以市价 Taker 扫单吃满！
+            if rem_sec <= 35.0:
+                target_cap = 1.28   # 极尾盘救险上限
                 max_allowed_ask = 0.96
             elif (fair_up < 0.22 and is_genuine_breakout):
                 target_cap = 1.25
                 max_allowed_ask = 0.96
             elif rem_sec <= 50.0:
-                target_cap = 1.08   # 尾盘微摩擦锁死 (最多容忍 0.08U 摩擦，杜绝高位倒贴)
+                target_cap = 1.08   # 尾盘微摩擦锁死
                 max_allowed_ask = 0.85
             elif fair_up <= 0.35 and rem_sec > 60.0:
-                target_cap = 1.08 if best_ask_dn is not None else 1.00   # 现货快速下杀破位，允许最高 1.08 微摩擦主动扫单锁死
+                # 现货下杀破位: 提升对冲上限至 1.08 (有卖一时允许以最多 1.08 扫单，无卖一时按 1.00 挂单)
+                target_cap = 1.08 if best_ask_dn is not None else 1.00
                 max_allowed_ask = 0.80
             elif rem_sec > 110.0:
-                target_cap = 1.02   # 前期平价微摩擦锁死 (最多容忍 2¢ 摩擦，杜绝低位死等)
+                target_cap = 1.04   # 前期平价微摩擦上限 1.04
                 max_allowed_ask = 0.75
             elif rem_sec > 60.0:
-                target_cap = 1.04   # 中期微摩擦平价对冲 (允许最多 0.04U 滑点)
+                target_cap = 1.06   # 中期微摩擦平价对冲
                 max_allowed_ask = 0.78
             else:
                 target_cap = 1.06
@@ -600,13 +594,13 @@ class Crypto5mEngine:
             max_hedge_dn = round(min(max_allowed_ask, target_cap - inv.avg_up_cost), 2)
 
             # Taker 主动吃单判定:
-            if is_golden_flush:
+            hedge_price = max_hedge_dn
+            if best_ask_dn is not None and best_ask_dn <= max_hedge_dn:
                 hedge_price = best_ask_dn
-            elif best_ask_dn is not None and best_ask_dn <= max_hedge_dn:
-                hedge_price = best_ask_dn
-            else:
-                # 挂单等待时，使用 max_hedge_dn 紧贴对冲上限，绝不使用过深折价自欺欺人
+            elif rem_sec <= 50.0:
                 hedge_price = max_hedge_dn
+            elif rem_sec > 110.0 or fair_up <= 0.35:
+                hedge_price = min(max_hedge_dn, fair_dn - 0.015)
 
             if hedge_price >= 0.03:
                 _add_order("DOWN", hedge_price, "hedge", fixed_shares=unpaired_up)
@@ -614,12 +608,7 @@ class Crypto5mEngine:
 
         # 情况 B: 当前持有未配对 DOWN 敞口 -> 强制锁死 DOWN，专心 1:1 对冲锁定 UP
         if unpaired_dn > 0.1:
-            is_golden_flush = (best_ask_up is not None and (inv.avg_down_cost + best_ask_up) <= 1.04)
-
-            if is_golden_flush:
-                target_cap = round(inv.avg_down_cost + best_ask_up, 2)
-                max_allowed_ask = best_ask_up
-            elif rem_sec <= 35.0:
+            if rem_sec <= 35.0:
                 target_cap = 1.28
                 max_allowed_ask = 0.96
             elif (fair_dn < 0.22 and is_genuine_breakout):
@@ -632,10 +621,10 @@ class Crypto5mEngine:
                 target_cap = 1.08 if best_ask_up is not None else 1.00
                 max_allowed_ask = 0.80
             elif rem_sec > 110.0:
-                target_cap = 1.02
+                target_cap = 1.04
                 max_allowed_ask = 0.75
             elif rem_sec > 60.0:
-                target_cap = 1.04
+                target_cap = 1.06
                 max_allowed_ask = 0.78
             else:
                 target_cap = 1.06
@@ -643,12 +632,13 @@ class Crypto5mEngine:
 
             max_hedge_up = round(min(max_allowed_ask, target_cap - inv.avg_down_cost), 2)
 
-            if is_golden_flush:
+            hedge_price = max_hedge_up
+            if best_ask_up is not None and best_ask_up <= max_hedge_up:
                 hedge_price = best_ask_up
-            elif best_ask_up is not None and best_ask_up <= max_hedge_up:
-                hedge_price = best_ask_up
-            else:
+            elif rem_sec <= 50.0:
                 hedge_price = max_hedge_up
+            elif rem_sec > 110.0 or fair_dn <= 0.35:
+                hedge_price = min(max_hedge_up, fair_up - 0.015)
 
             if hedge_price >= 0.03:
                 _add_order("UP", hedge_price, "hedge", fixed_shares=unpaired_dn)
@@ -1349,7 +1339,7 @@ class Crypto5mEngine:
     def run_loop(self, duration_sec: float = 0.0):
         start = time.time()
         logger.info(
-            f"🚀 启动 Crypto 5m 量化做市旗舰引擎 v5.5 (黄金窗口闪电吃单·断尾双闭环旗舰版) | 初始模拟本金: ${self.initial_paper_capital:.2f} | "
+            f"🚀 启动 Crypto 5m 量化做市旗舰引擎 v5.6 (深度穿透扫单·硬顶收敛旗舰版) | 初始模拟本金: ${self.initial_paper_capital:.2f} | "
             f"单档预算: ${self.budget_per_order_usd:.2f} | 标的: {self.coins} | 账本持久化: {self.persist_ledger}"
         )
         self.ws_spot.start()
